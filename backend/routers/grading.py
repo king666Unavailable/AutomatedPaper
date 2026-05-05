@@ -34,23 +34,46 @@ class StartGradingResponse(BaseModel):
     msg: str
     data: dict
 
+AREA_HINT = """
+本批答题卡图片已经用不同底色的半透明矩形划分了不同的题型区域，并在每个区域左上角标注了具体的题型名称（如“选择题区域”、“填空题区域”等）。
+请根据每个区域标注的题型，从对应区域中识别属于该题型的小题答案。
+区域在图片中从上到下依次排列，题号也是按顺序分布的。如果某道题的答案位于两个区域的分界附近，请结合上下文和题号明确归属，不要遗漏。
+"""
 
 # ==================== OCR 识别函数 ====================
 def ocr_only(image_paths: List[str], questions: List[dict]) -> Dict[int, dict]:
-    """
-    第一次识别：使用多模态模型提取学生手写答案，返回 { order: {"exists": True, "answer": str} }
-    """
     if not image_paths:
         return {}
 
     num_questions = len(questions)
-    prompt = (
+
+    # 每道题的题型描述（之前已添加）
+    type_descriptions = []
+    for q in questions:
+        order = q['question_order']
+        q_type = q.get('type', '主观题')
+        if q_type in ('choice', '选择题'):
+            desc = f"第{order}题：选择题，答案为一个字母"
+        elif q_type in ('fill_blank', '填空题'):
+            desc = f"第{order}题：填空题，答案很短"
+        elif q_type in ('true_false', '判断题'):
+            desc = f"第{order}题：判断题，答案为对/错或√/×"
+        else:
+            desc = f"第{order}题：主观题（简答/计算/论述），答案可能较长，必须完整提取所有手写文字、公式和代码"
+        type_descriptions.append(desc)
+    type_hint = "本次识别的题目类型如下：\n" + "\n".join(type_descriptions) + "\n"
+
+    prompt = AREA_HINT + "\n" + type_hint + (
         "你是一个严格的光学字符识别（OCR）工具。\n"
         f"本次发送了 {len(image_paths)} 张答题卡图片，请按顺序阅读所有图片，忽略印刷体题目描述、表格、得分栏等无关内容。\n"
         "请识别每个小题的学生答案。\n"
         f"一共有 {num_questions} 道小题，题号从 1 到 {num_questions}。\n"
         "小题的题号是普通数字加标点，例如“1.”、“2.”、“3.”。每个这样的题号代表一道独立的小题。\n"
         "注意：填空题的答案通常很短，可能是单个数字、字母或词语，请务必提取，不要忽略。\n"
+        # ▼ 新增规则 ▼
+        "对于填空题，如果多个小题的答案在同一行或同一区域连续书写，即使中间的某个小题答案为空白，你也必须继续识别该行/区域后面其他小题的答案，不得因为一个空白就忽略后续所有内容。\n"
+        # ▲ 新增结束 ▲
+        "特别重要：对于**主观题（简答题、论述题、计算题等）**，答案往往是多行文字、代码或公式，你必须**完整、精确地提取所有手写内容**，即使书写潦草也不要遗漏。如果某个小题的答题区域较大，请仔细从上到下扫描，避免截断。\n"
         "重要：你需要准确识别学生手写答案中的数学符号和公式，包括但不限于：\n"
         "  - 绝对值：|x|、||x||、|a-b| 等，用竖线表示，不要写成 abs(x) 或 abs()\n"
         "  - 范数：||x||、||x||_p\n"
@@ -66,7 +89,7 @@ def ocr_only(image_paths: List[str], questions: List[dict]) -> Dict[int, dict]:
         "输出一个JSON对象，键为题号（字符串），值为对应的学生答案。例如：{\"1\": \"答案1\", \"2\": \"答案2\\n第二分点\", \"3\": \"\"}\n"
         "同一道小题的多个分点（如带圈数字①、②、括号数字(1)、(2)等）必须合并为一个字符串，使用换行符分隔。\n"
         "输出的答案中不要包含题号本身（例如不要输出“2、负实轴单位圆”，只需要输出“负实轴单位圆”）。\n"
-        "如果某道小题没有答案或无法识别，则对应键的值为空字符串。\n"
+        "若某道小题学生只写了题号却没有书写任何有效的答案内容（如大片空白），或者答案无法识别，则对应键的值必须是空字符串。\n"
         "特别重要：对于**选择题**，你必须为每个题号单独输出一个键值对，严禁将多个选择题的答案合并到一个键中！\n"
         "例如，如果图片中有四道选择题，答案分别是 'A', 'B', 'C', 'D'，你必须输出："
         "{\"1\": \"A\", \"2\": \"B\", \"3\": \"C\", \"4\": \"D\"}，而不是 {\"1\": \"A B C D\"} 或 {\"1\": \"A2.B3.C4.D\"}。\n"
@@ -109,12 +132,10 @@ def ocr_only(image_paths: List[str], questions: List[dict]) -> Dict[int, dict]:
     if not raw_result:
         return {}
 
-    # 去除 Markdown 代码块标记
     cleaned = re.sub(r'^```json\s*', '', raw_result.strip())
     cleaned = re.sub(r'\s*```$', '', cleaned)
     logger.info(f"清理后的内容: {cleaned}")
 
-    # 解析 JSON 对象（优先），若得到数组则降级按顺序映射
     try:
         data = json.loads(cleaned)
         if isinstance(data, list):
@@ -275,15 +296,27 @@ def score_only(question: dict, student_answer: str) -> float:
             logger.info(f"客观题匹配失败: 参考'{std_ref}' vs 学生'{std_ans}'")
             return 0.0
 
-    # 主观题：调用模型评分
-    prompt = f"""你是一位阅卷教师。请根据以下信息对学生的答案进行评分：
+    # ===== 主观题评分（新版 prompt）=====
+    prompt = f"""你是一位专业、公正的阅卷教师。请根据以下信息对学生的答案进行评分。
 
-题目：{question['content']}
-参考答案：{reference}
-评分标准：{question.get('scoring_rules', '根据答案准确性给分')}
-学生答案：{student_answer}
+**题目内容**：
+{question['content']}
 
-请只返回一个0-100之间的数字分数，不要有其他文字。"""
+**参考答案**（仅供你理解题意，不作为唯一评分标准）：
+{reference}
+
+**评分标准**：
+{question.get('scoring_rules', '根据答案的正确性、完整性和逻辑清晰度给分')}
+
+**学生答案**：
+{student_answer}
+
+**评分要求**：
+1. 重点评判学生答案是否**正确回答了题目所问**，逻辑是否合理，关键步骤或要点是否齐全。
+2. 参考答案仅用于帮助你理解题意，**不要求学生的表述与参考答案完全一致**。只要学生的解答思路正确、结果合理，即使表达方式不同、使用了其他例子或不同的代码实现，也应给予高分或满分。
+3. 对于编程类题目，重点关注：算法思路是否正确、核心代码逻辑是否合理、是否考虑了边界条件等，只要满足题目要求即可得高分，不强制与参考答案代码完全相同。
+4. 若答案完全错误或文不对题，请给出低分（0-20分）；若部分正确但有遗漏或小错误，请酌情给分（50-80分）；若基本正确且完整，请给高分（80-100分）。
+5. 请只返回一个0-100之间的数字分数，不要输出任何其他文字、解释或标点。"""
 
     body = {
         "model": MM_MODEL_CONFIG["model"],
@@ -507,7 +540,6 @@ def split_combined_fillblanks(questions: List[dict], answers: Dict[int, str]) ->
     import re
     new_answers = answers.copy()
 
-    # 收集所有填空题的题号（按顺序）
     fill_orders = [q['question_order'] for q in questions if q.get('type') in ['填空题', 'fill_blank']]
     if not fill_orders:
         return new_answers
@@ -517,23 +549,32 @@ def split_combined_fillblanks(questions: List[dict], answers: Dict[int, str]) ->
         if not text.strip():
             continue
 
-        # 1. 先尝试多题号拆解模式：数字+分隔符+内容
-        pattern = r'(\d+)[\.、:：）)\s]+([^0-9]+?(?=\s*\d+[\.、:：）)]|$)'
+        # 1. 尝试多题号拆解：数字+分隔符+内容
+        pattern = r'(\d+)[\.、:：）)\s]+([^0-9]+?(?=\s*\d+[\.、:：）)]|$))'
         matches = list(re.finditer(pattern, text, re.DOTALL))
 
         if len(matches) >= 2:
-            # 多题号合并，拆解并剥离题号
             for match in matches:
                 num = int(match.group(1))
                 ans = match.group(2).strip()
                 if num in fill_orders:
                     new_answers[num] = ans
         else:
-            # 单题答案，检查是否以“数字+标点”开头
-            # 例如 "1. 北京" → 剥离为 "北京"
-            cleaned = re.sub(r'^\s*\d+[\.、:：）)]\s*', '', text)
-            if cleaned != text:
-                new_answers[order] = cleaned
+            # 2. 单题答案，彻底剥离各种题号前缀
+            cleaned = re.sub(
+                r'^\s*'
+                r'(?:'
+                r'\(\s*\d+\s*\)'           # (1)
+                r'|（\s*\d+\s*）'          # （1）
+                r'|[①②③④⑤⑥⑦⑧⑨⑩]+'       # 带圈数字
+                r'|\d+[\.、:：）)\u00A0]\s*' # 数字+标点
+                r')+',
+                '', text
+            ).strip()
+            # 避免误删纯数字答案（如答案本身就是 "123"）
+            if cleaned or re.fullmatch(r'\d+', text):
+                new_answers[order] = cleaned if cleaned else text
+
     return new_answers
 
 
@@ -687,7 +728,6 @@ async def process_grading(exam_id: int, job_id: int):
 
             if invalid_choices:
                 logger.info(f"发现 {len(invalid_choices)} 道选择题答案异常，调用纠错模型...")
-                # 注意：这里使用原始图片路径（未预处理）可能更稳定？但已用预处理图片，效果通常更好
                 corrected_answers = correct_answers_with_image(image_paths,
                                                                {order: info["answer"] for order, info in
                                                                 ocr_result.items()},
@@ -699,6 +739,22 @@ async def process_grading(exam_id: int, job_id: int):
             else:
                 logger.info("所有选择题答案格式正常，跳过纠错模型")
             # -------------------------------------------------------------
+
+            # ---------- 全局填空题答案清洗（兜底） ----------
+            for q in questions:
+                if q.get('type') in ['填空题', 'fill_blank']:
+                    order = q['question_order']
+                    ans = ocr_result.get(order, {}).get("answer", "")
+                    if ans:
+                        cleaned = re.sub(
+                            r'^\s*'
+                            r'(?:\(\s*\d+\s*\)|（\s*\d+\s*）|[①②③④⑤⑥⑦⑧⑨⑩]+|\d+[\.、:：）)\u00A0]\s*)+',
+                            '', ans
+                        ).strip()
+                        if cleaned and cleaned != ans:
+                            logger.info(f"全局清洗填空题 {order}: '{ans}' -> '{cleaned}'")
+                            ocr_result[order]["answer"] = cleaned
+            # --------------------------------------------------
 
             # 评分
             total_score = 0.0

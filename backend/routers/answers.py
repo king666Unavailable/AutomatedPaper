@@ -7,6 +7,9 @@ import shutil
 import cv2
 import numpy as np
 import json
+import base64
+import re
+import requests
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from backend.database import get_db
@@ -14,75 +17,226 @@ from backend.database import get_db
 logger = logging.getLogger(__name__)
 
 from backend.database import engine
-from backend.config import UPLOAD_DIR
+from backend.config import UPLOAD_DIR, MM_MODEL_CONFIG
 
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp'}
 
+
 def is_allowed_file(filename: str) -> bool:
     ext = os.path.splitext(filename)[1].lower()
     return ext in ALLOWED_EXTENSIONS
+
 
 def ensure_upload_dir(exam_id: int) -> str:
     target_dir = os.path.join(UPLOAD_DIR, "answer_sheets", str(exam_id))
     os.makedirs(target_dir, exist_ok=True)
     return target_dir
 
+
 # ==================== 答题卡预处理函数 ====================
 
+def deskew_image(image: np.ndarray) -> np.ndarray:
+    """自动检测倾斜角度并旋转校正"""
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100,
+                            minLineLength=100, maxLineGap=10)
+    angles = []
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            angle = np.arctan2(y2 - y1, x2 - x1) * 180.0 / np.pi
+            if -45 < angle < 45:
+                angles.append(angle)
+
+    if not angles:
+        logger.info("未检测到有效水平线段，跳过倾斜校正")
+        return image
+
+    median_angle = np.median(angles)
+    logger.info(f"检测到倾斜角度: {median_angle:.2f}°")
+
+    if abs(median_angle) < 0.5:
+        return image
+
+    h, w = image.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, median_angle, 1.0)
+    rotated = cv2.warpAffine(image, M, (w, h),
+                             borderMode=cv2.BORDER_CONSTANT,
+                             borderValue=(255, 255, 255))
+    return rotated
+
+
 def enhance_text_clarity(gray: np.ndarray) -> np.ndarray:
-    """对比度增强 + 去噪"""
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    """温和增强对比度并轻量锐化"""
+    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-    denoised = cv2.bilateralFilter(enhanced, 9, 75, 75)
-    return denoised
+    denoised = cv2.bilateralFilter(enhanced, 5, 30, 30)
+    kernel_sharpen = np.array([[-0.5, -1, -0.5],
+                               [-1, 7, -1],
+                               [-0.5, -1, -0.5]])
+    sharpened = cv2.filter2D(denoised, -1, kernel_sharpen)
+    sharpened = np.clip(sharpened, 0, 255).astype(np.uint8)
+    return sharpened
+
 
 def detect_and_remove_strikethroughs(gray: np.ndarray) -> np.ndarray:
-    """检测划线、涂抹区域并 inpaint 修复"""
-    # 反色二值化
+    """检测划线、涂抹并 inpaint 修复"""
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # 检测水平长线
-    kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
+    kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 1))
     horizontal = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_h)
 
-    # 检测垂直线
-    kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
+    kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 30))
     vertical = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_v)
 
-    # 检测大面积涂抹
-    kernel_smear = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 20))
+    kernel_smear = cv2.getStructuringElement(cv2.MORPH_RECT, (18, 18))
     smear = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_smear)
 
-    # 合并所有划痕区域
     strikethrough = cv2.bitwise_or(horizontal, vertical)
     strikethrough = cv2.bitwise_or(strikethrough, smear)
 
-    # 膨胀
     kernel_dilate = np.ones((3, 3), np.uint8)
-    strikethrough = cv2.dilate(strikethrough, kernel_dilate, iterations=2)
+    strikethrough = cv2.dilate(strikethrough, kernel_dilate, iterations=1)
 
-    # 利用轮廓面积过滤
     contours, _ = cv2.findContours(strikethrough, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     mask = np.zeros_like(gray)
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < 20:
+        if area < 80:
             continue
         x, y, w, h = cv2.boundingRect(cnt)
-        aspect_ratio = max(w/h, h/w) if h > 0 else 999
-        if area > 500 or (aspect_ratio > 5 and area > 100):
+        aspect_ratio = max(w / h, h / w) if h > 0 else 999
+        if area > 600 or (aspect_ratio > 4 and area > 200):
             cv2.drawContours(mask, [cnt], -1, 255, -1)
 
-    # inpaint 修复
     cleaned_gray = cv2.inpaint(gray, mask, 5, cv2.INPAINT_TELEA)
     return cleaned_gray
+
+
+def detect_regions_with_vlm(image_path: str, questions_per_section: List[int]) -> Optional[List[int]]:
+    """
+    调用多模态视觉模型检测答题卡上各题型区域的纵向分界位置。
+    返回区域分界 y 像素坐标列表（长度 = 题型数 - 1），若失败返回 None。
+    """
+    try:
+        with open(image_path, "rb") as f:
+            img_base64 = base64.b64encode(f.read()).decode("utf-8")
+        mime_type = "image/jpeg" if not image_path.lower().endswith('.png') else "image/png"
+
+        num_sections = len(questions_per_section)
+        prompt = (
+            f"这是一张学生答题卡图片，共有 {num_sections} 个题型区域，从上到下依次排列。"
+            "请找出每个题型区域的分界线（即下一个题型开始的垂直位置），"
+            "以图像高度的比例（0~1之间的小数）返回。"
+            "例如，如果选择题在图像顶部30%处结束，填空题从30%开始，简答题从70%开始，返回 [0.3, 0.7]。"
+            "只返回一个JSON数组，不要包含其他文字。"
+        )
+
+        content = [
+            {"text": prompt},
+            {"image": f"data:{mime_type};base64,{img_base64}"}
+        ]
+
+        body = {
+            "model": MM_MODEL_CONFIG["model"],
+            "input": {"messages": [{"role": "user", "content": content}]},
+            "parameters": {"result_format": "message", "temperature": 0.0}
+        }
+        headers = {
+            "Authorization": f"Bearer {MM_MODEL_CONFIG['api_key']}",
+            "Content-Type": "application/json"
+        }
+
+        resp = requests.post(MM_MODEL_CONFIG["api_url"], headers=headers, json=body,
+                             timeout=MM_MODEL_CONFIG["timeout"])
+        resp.raise_for_status()
+        result = resp.json()
+        raw = result["output"]["choices"][0]["message"]["content"][0]["text"]
+        logger.info(f"VLM区域检测原始返回: {raw}")
+
+        # 解析 JSON 数组
+        cleaned = re.sub(r'^```json\s*', '', raw.strip())
+        cleaned = re.sub(r'\s*```$', '', cleaned)
+        ratios = json.loads(cleaned)
+        if not isinstance(ratios, list) or len(ratios) != num_sections - 1:
+            return None
+
+        # 转换为像素 y 坐标（基于当前图片高度）
+        img = cv2.imread(image_path)
+        if img is None:
+            return None
+        h = img.shape[0]
+        y_coords = [int(r * h) for r in ratios if 0 < r < 1]
+        # 确保递增且过滤掉太靠近边缘的值
+        y_coords = [y for y in y_coords if 30 < y < h - 30]
+        y_coords.sort()
+        if len(y_coords) == num_sections - 1:
+            return y_coords
+        else:
+            return None
+
+    except Exception as e:
+        logger.warning(f"VLM区域检测失败: {e}")
+        return None
+
+
+def draw_question_regions(image: np.ndarray,
+                          questions_per_section: List[int],
+                          section_types: List[str] = None,
+                          divider_ys: List[int] = None) -> np.ndarray:
+    """
+    绘制半透明底色区域并标注题型名称。
+    若提供 divider_ys，则直接使用这些 y 坐标作为区域边界；否则均分图像高度。
+    """
+    num_sections = len(questions_per_section)
+    if num_sections == 0:
+        return image
+
+    h, w = image.shape[:2]
+
+    if divider_ys and len(divider_ys) >= num_sections - 1:
+        y_coords = []
+        prev_y = 0
+        for i, y in enumerate(divider_ys[:num_sections - 1]):
+            y_coords.append((prev_y, y))
+            prev_y = y
+        y_coords.append((prev_y, h))
+    else:
+        section_height = h // num_sections
+        y_coords = [(i * section_height, (i + 1) * section_height) for i in range(num_sections)]
+        y_coords[-1] = (y_coords[-1][0], h)
+
+    overlay = image.copy()
+    colors = [(200, 220, 240), (240, 220, 200), (220, 240, 220),
+              (240, 200, 240), (200, 240, 240), (240, 240, 200)]
+    for i, (y1, y2) in enumerate(y_coords):
+        color = colors[i % len(colors)]
+        cv2.rectangle(overlay, (0, y1), (w, y2), color, -1)
+    alpha = 0.15
+    image = cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0)
+
+    for i, (y1, y2) in enumerate(y_coords):
+        if i < len(y_coords) - 1:
+            cv2.line(image, (0, y2), (w, y2), (255, 100, 0), 2)
+        label = section_types[i] if section_types and i < len(section_types) else f'区域{i+1}'
+        cv2.putText(image, label, (10, y1 + 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+
+    return image
+
 
 def draw_question_dividers(image: np.ndarray,
                            layout: Optional[List[dict]] = None,
                            questions_per_section: Optional[List[int]] = None) -> np.ndarray:
-    """绘制大题分割线"""
+    """简单线条分割（无底色），用于手动布局或默认三等分"""
     h, w = image.shape[:2]
     if not layout and questions_per_section:
         total_q = sum(questions_per_section)
@@ -93,7 +247,7 @@ def draw_question_dividers(image: np.ndarray,
             cum += cnt
             y = int((cum / total_q) * h)
             cv2.line(image, (0, y), (w, y), (255, 100, 0), 2)
-            cv2.putText(image, f'第{i+1}大题', (10, y - 10),
+            cv2.putText(image, f'第{i + 1}大题', (10, y - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 100, 0), 2)
     elif layout:
         for div in layout:
@@ -103,7 +257,6 @@ def draw_question_dividers(image: np.ndarray,
                 cv2.putText(image, div['label'], (10, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 100, 0), 2)
     else:
-        # 默认三等分
         for i in range(1, 3):
             y = int(h * i / 3)
             cv2.line(image, (0, y), (w, y), (255, 100, 0), 2)
@@ -111,27 +264,46 @@ def draw_question_dividers(image: np.ndarray,
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 100, 0), 2)
     return image
 
+
 def preprocess_answer_sheet(image_path: str,
-                           layout: Optional[List[dict]] = None,
-                           questions_per_section: Optional[List[int]] = None) -> Optional[np.ndarray]:
-    """完整预处理：返回处理后的彩色图像"""
+                            layout: Optional[List[dict]] = None,
+                            questions_per_section: Optional[List[int]] = None,
+                            section_types: Optional[List[str]] = None) -> Optional[np.ndarray]:
+    """
+    完整预处理：倾斜校正 → 增强 → 划痕遮盖 → 自动检测/均分区域 → 绘制标注。
+    """
     img = cv2.imread(image_path)
     if img is None:
         logger.error(f"无法读取图片: {image_path}")
         return None
 
+    img = deskew_image(img)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = enhance_text_clarity(gray)
     gray = detect_and_remove_strikethroughs(gray)
-
-    # 转回三通道
     result = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-    # 画分割线
-    result = draw_question_dividers(result, layout, questions_per_section)
+    # 尝试使用 VLM 自动检测分割线（可通过配置关闭）
+    auto_dividers = None
+    if questions_per_section and MM_MODEL_CONFIG.get("enable_region_detection", False):
+        auto_dividers = detect_regions_with_vlm(image_path, questions_per_section)
+
+    if questions_per_section:
+        if auto_dividers and len(auto_dividers) >= len(questions_per_section) - 1:
+            result = draw_question_regions(result, questions_per_section,
+                                           section_types, divider_ys=auto_dividers)
+        else:
+            result = draw_question_regions(result, questions_per_section, section_types)
+    elif layout:
+        result = draw_question_dividers(result, layout)
+    else:
+        result = draw_question_dividers(result)
+
     return result
 
-# ==================== 获取考试所有图片 ====================
+
+# ==================== API 端点 ====================
+
 @router.get("/api/exams/{exam_id}/images")
 def get_exam_images(exam_id: int):
     try:
@@ -179,20 +351,18 @@ def get_exam_images(exam_id: int):
         logger.error(f"获取考试图片列表失败 (exam_id={exam_id}): {str(e)}")
         raise HTTPException(status_code=500, detail="获取图片列表失败")
 
-# ==================== 上传图片（支持一个学生多张图片） ====================
 
 @router.post("/api/exams/{exam_id}/images")
 async def upload_exam_images(
-    exam_id: int,
-    files: List[UploadFile] = File(...),
-    student_ids: List[int] = Form(...)
+        exam_id: int,
+        files: List[UploadFile] = File(...),
+        student_ids: List[int] = Form(...)
 ):
     if len(student_ids) == 1 and len(files) > 1:
         student_ids = student_ids * len(files)
     elif len(student_ids) != len(files):
         raise HTTPException(status_code=400, detail="文件数量与学生ID数量不匹配")
 
-    # 验证考试存在
     try:
         with engine.connect() as conn:
             exam = conn.execute(
@@ -208,7 +378,6 @@ async def upload_exam_images(
         logger.error(f"验证考试失败: {str(e)}")
         raise HTTPException(status_code=500, detail="验证考试失败")
 
-    # 验证所有学生
     try:
         with engine.connect() as conn:
             for sid in set(student_ids):
@@ -224,8 +393,8 @@ async def upload_exam_images(
         logger.error(f"验证学生失败: {str(e)}")
         raise HTTPException(status_code=500, detail="验证学生失败")
 
-    # 获取题目分布（用于分割线）
     questions_per_section = []
+    section_types = []
     try:
         with engine.connect() as conn:
             q_rows = conn.execute(
@@ -238,17 +407,16 @@ async def upload_exam_images(
                 """),
                 {"exam_id": exam_id}
             ).fetchall()
-            # 简单按题型分组（顺序保持）
             current_type = None
             for row in q_rows:
                 if row.type != current_type:
                     questions_per_section.append(0)
+                    section_types.append(row.type)
                     current_type = row.type
                 questions_per_section[-1] += 1
     except Exception as e:
         logger.warning(f"获取题目分布失败: {e}")
 
-    # 解析布局配置
     layout = None
     if exam_layout:
         try:
@@ -285,20 +453,20 @@ async def upload_exam_images(
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 
-            # ----- 图片预处理 -----
             base, ext = os.path.splitext(file_path)
             processed_path = f"{base}_processed.png"
 
             try:
-                processed_img = preprocess_answer_sheet(file_path, layout, questions_per_section)
+                processed_img = preprocess_answer_sheet(
+                    file_path, layout, questions_per_section, section_types
+                )
                 if processed_img is not None:
                     cv2.imwrite(processed_path, processed_img)
                 else:
-                    processed_path = file_path  # 回退到原图
+                    processed_path = file_path
             except Exception as pp_err:
                 logger.error(f"预处理失败 {file_path}: {pp_err}")
                 processed_path = file_path
-            # ---------------------
 
             with engine.connect() as conn:
                 conn.execute(
@@ -334,7 +502,7 @@ async def upload_exam_images(
         "data": {"uploaded_count": uploaded_count, "errors": errors}
     }
 
-# ==================== 获取某个学生的所有图片 ====================
+
 @router.get("/api/exams/{exam_id}/students/{student_id}/images")
 def get_student_images(exam_id: int, student_id: int):
     try:
@@ -372,7 +540,7 @@ def get_student_images(exam_id: int, student_id: int):
         logger.error(f"获取学生图片失败: {str(e)}")
         raise HTTPException(status_code=500, detail="获取学生图片失败")
 
-# ==================== 删除图片 ====================
+
 @router.delete("/api/exams/{exam_id}/images/{image_id}")
 def delete_image(exam_id: int, image_id: int):
     try:
@@ -384,10 +552,8 @@ def delete_image(exam_id: int, image_id: int):
             if not img:
                 raise HTTPException(status_code=404, detail="图片不存在")
 
-            # 删除原图
             if os.path.exists(img.file_path):
                 os.remove(img.file_path)
-            # 删除预处理图（如果存在且不同于原图）
             if img.processed_file_path and img.processed_file_path != img.file_path and os.path.exists(img.processed_file_path):
                 os.remove(img.processed_file_path)
 
@@ -401,12 +567,12 @@ def delete_image(exam_id: int, image_id: int):
         logger.error(f"删除图片失败: {str(e)}")
         raise HTTPException(status_code=500, detail="删除图片失败")
 
-# ==================== 更新图片顺序 ====================
+
 @router.put("/api/exams/{exam_id}/images/{image_id}")
 def update_image_order(
-    exam_id: int,
-    image_id: int,
-    page_order: int = Form(...)
+        exam_id: int,
+        image_id: int,
+        page_order: int = Form(...)
 ):
     try:
         with engine.connect() as conn:
@@ -429,7 +595,7 @@ def update_image_order(
         logger.error(f"更新图片顺序失败: {str(e)}")
         raise HTTPException(status_code=500, detail="更新图片顺序失败")
 
-# ==================== 图片拖拽逻辑 ====================
+
 @router.put("/api/exams/{exam_id}/images/{image_id}/transfer")
 def transfer_image(
         exam_id: int,

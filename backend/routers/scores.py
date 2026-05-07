@@ -8,6 +8,7 @@ from backend.database import engine, get_db
 from fastapi.responses import StreamingResponse
 import pandas as pd
 import io
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,7 @@ def export_exam_scores(exam_id: int):
                     score_map[sid] = {}
                 score_map[sid][qid] = row.score
 
+            # 构建导出数据
             rows = []
             for student in students:
                 row_data = {
@@ -295,14 +297,16 @@ def export_exam_scores(exam_id: int):
             output.seek(0)
 
             filename = f"exam_{exam.exam_name}_{exam_id}_scores.xlsx"
+            encoded_filename = quote(filename)
             return StreamingResponse(
                 output,
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
             )
     except Exception as e:
         logger.error(f"导出成绩失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"导出失败: {str(e)}")
+
 
 @router.get("/api/exams/{exam_id}/export-objective")
 def export_objective_answers(exam_id: int):
@@ -397,10 +401,11 @@ def export_objective_answers(exam_id: int):
             output.seek(0)
 
             filename = f"exam_{exam.exam_name}_{exam_id}_objective_answers.xlsx"
+            encoded_filename = quote(filename)
             return StreamingResponse(
                 output,
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
             )
     except HTTPException:
         raise

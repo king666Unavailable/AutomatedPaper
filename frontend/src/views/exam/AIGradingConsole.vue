@@ -87,7 +87,7 @@
         <el-table-column label="学生答案" min-width="250" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="row.student_answer === null">（题目缺失）</span>
-            <span v-else>{{ row.student_answer || '（未识别）' }}</span>
+            <span v-else>{{ row.student_answer || '' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="得分" width="220">

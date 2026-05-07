@@ -34,11 +34,13 @@ class StartGradingResponse(BaseModel):
     msg: str
     data: dict
 
+
 AREA_HINT = """
 本批答题卡图片已经用不同底色的半透明矩形划分了不同的题型区域，并在每个区域左上角标注了具体的题型名称（如“选择题区域”、“填空题区域”等）。
 请根据每个区域标注的题型，从对应区域中识别属于该题型的小题答案。
 区域在图片中从上到下依次排列，题号也是按顺序分布的。如果某道题的答案位于两个区域的分界附近，请结合上下文和题号明确归属，不要遗漏。
 """
+
 
 # ==================== OCR 识别函数 ====================
 def ocr_only(image_paths: List[str], questions: List[dict]) -> Dict[int, dict]:
@@ -47,7 +49,7 @@ def ocr_only(image_paths: List[str], questions: List[dict]) -> Dict[int, dict]:
 
     num_questions = len(questions)
 
-    # 每道题的题型描述（之前已添加）
+    # 题型描述
     type_descriptions = []
     for q in questions:
         order = q['question_order']
@@ -69,15 +71,22 @@ def ocr_only(image_paths: List[str], questions: List[dict]) -> Dict[int, dict]:
         "请识别每个小题的学生答案。\n"
         f"一共有 {num_questions} 道小题，题号从 1 到 {num_questions}。\n"
         "小题的题号是普通数字加标点，例如“1.”、“2.”、“3.”。每个这样的题号代表一道独立的小题。\n"
-        "注意：填空题的答案通常很短，可能是单个数字、字母或词语，请务必提取，不要忽略。\n"
-        # ▼ 新增规则 ▼
-        "对于填空题，如果多个小题的答案在同一行或同一区域连续书写，即使中间的某个小题答案为空白，你也必须继续识别该行/区域后面其他小题的答案，不得因为一个空白就忽略后续所有内容。\n"
-        # ▲ 新增结束 ▲
-        "特别重要：对于**主观题（简答题、论述题、计算题等）**，答案往往是多行文字、代码或公式，你必须**完整、精确地提取所有手写内容**，即使书写潦草也不要遗漏。如果某个小题的答题区域较大，请仔细从上到下扫描，避免截断。\n"
+        "你必须根据图片上**印刷题号的物理位置**来确定每个答案的归属：寻找印刷题号（如“6.”），该题号之后、下一个印刷题号之前的手写内容即为该题答案；如果该区域内没有任何手写痕迹，则答案必须为空字符串。\n"
+        "绝对不允许将位于下一个印刷题号之后的内容填到当前题号。\n"
+        "例如，图片中印刷题号依次为“6.” “7.” “8.”，在“6.”和“7.”之间有一片空白，“7.”之后手写为“hello”，“8.”之后手写为“world”，则输出：\n"
+        "{\"6\": \"\", \"7\": \"hello\", \"8\": \"world\"}\n"
+        "而不是 {\"6\": \"hello\", \"7\": \"world\", \"8\": \"\"} 或任意错位。\n"
+        "学生可能会手写题号，此时仍需根据手写题号的位置与印刷题号进行对照，若手写题号与印刷题号不对应，以手写题号对应的区域内容为准，但若无法确定，必须留空。\n"
+        "注意：填空题的答案通常很短，可能是单个数字、字母或词语，但**也必须完整包含所有数学符号（如括号、区间、运算符号）**，请务必提取，不要忽略。\n"
+        "对于填空题，如果多个小题的答案在同一行连续书写，即使中间的某个小题答案为空白，你也必须继续识别该行后面其他小题的答案，不得因为一个空白就忽略后续所有内容。\n"
+        "绝对不要把题号本身（如手写的“1.”、“2.”）当作答案。如果某个位置只有孤立的数字和标点，且周围无其他内容，应视为题号，对应答案留空。\n"
+        "特别重要：对于**主观题（简答题、论述题、计算题等）**，答案往往是多行文字、代码或公式，你必须**完整、精确地提取所有手写内容**，即使书写潦草也不要遗漏。\n"
         "重要：你需要准确识别学生手写答案中的数学符号和公式，包括但不限于：\n"
         "  - 绝对值：|x|、||x||、|a-b| 等，用竖线表示，不要写成 abs(x) 或 abs()\n"
         "  - 范数：||x||、||x||_p\n"
         "  - 基本运算：+、-、×、÷、=、≈、≠、≤、≥、±、√、∛、∞\n"
+        "  - 括号与大括号：()、[]、{}、⟨⟩、|| ||（绝对值/范数）\n"
+        "  - 区间表示：如 (a,b)、[a,b]、(-∞,0] 等\n"
         "  - 希腊字母：α、β、γ、δ、ε、λ、μ、π、σ、τ、ω\n"
         "  - 上下标：x^2、y_n、a^{b}、e^{x}（用 ^ 和 _ 表示）\n"
         "  - 分数：a/b 或水平分数线（写作 (分子)/(分母)）\n"
@@ -185,12 +194,11 @@ def correct_answers_with_image(
     if not image_paths:
         return {}
 
-    # 构建每道题的题型说明
     q_descriptions = []
     for q in questions:
         order = q['question_order']
         q_type = q.get('type', 'essay')
-        q_content = q.get('content', '')[:50]  # 截取前50字
+        q_content = q.get('content', '')[:50]
         if q_type in ('choice', '选择题'):
             type_hint = "选择题，答案只能是一个英文字母(A/B/C/D等)，不要数字、汉字或其他符号"
         elif q_type in ('fill_blank', '填空题'):
@@ -275,7 +283,6 @@ def correct_answers_with_image(
 
 # ==================== 评分 ====================
 def score_only(question: dict, student_answer: str) -> float:
-    """返回百分制分数（0-100）"""
     if not student_answer or student_answer.strip() == "":
         logger.warning(f"题目 {question['id']} 学生答案为空，返回0分")
         return 0.0
@@ -286,7 +293,7 @@ def score_only(question: dict, student_answer: str) -> float:
     if q_type in ['选择题', '填空题', '判断题']:
         def normalize(s):
             s = s.strip().lower()
-            s = re.sub(r'[^\w\u4e00-\u9fff\u0370-\u03ff\+\-\*/=<>≤≥≠√∑∫∂\|\[\]]', '', s)
+            s = re.sub(r'[^\w\u4e00-\u9fff\u0370-\u03ff\+\-\*/=<>≤≥≠√∑∫∂\|\[\]{}()〈〉⟨⟩]', '', s)
             return s
         std_ref = normalize(reference)
         std_ans = normalize(student_answer)
@@ -296,7 +303,6 @@ def score_only(question: dict, student_answer: str) -> float:
             logger.info(f"客观题匹配失败: 参考'{std_ref}' vs 学生'{std_ans}'")
             return 0.0
 
-    # ===== 主观题评分（新版 prompt）=====
     prompt = f"""你是一位专业、公正的阅卷教师。请根据以下信息对学生的答案进行评分。
 
 **题目内容**：
@@ -522,10 +528,8 @@ def split_combined_choices(questions: List[dict], answers: Dict[int, str]) -> Di
         ans = new_answers.get(order, '')
         if not ans:
             continue
-        # 只允许：纯字母，或最多 4 个由空格/点分隔的字母（如 "A" "A B" "A.B.D"）
         if re.fullmatch(r'[A-Za-z](?:\s*[\.\s]\s*[A-Za-z]){0,3}', ans):
             continue
-        # 长度异常或包含汉字/数字 → 判定为错位答案，清空
         if len(ans) > 5 or re.search(r'[\u4e00-\u9fff\d]', ans):
             logger.warning(f"选择题 {order} 答案异常（疑似其他题目内容），已清空: '{ans}'")
             new_answers[order] = ''
@@ -613,7 +617,6 @@ async def process_grading(exam_id: int, job_id: int):
             )
             conn.commit()
 
-            # 获取题目列表
             questions_result = conn.execute(
                 text("""
                      SELECT q.id, q.type, q.content, q.reference_answer, q.scoring_rules,
@@ -641,7 +644,6 @@ async def process_grading(exam_id: int, job_id: int):
             student_id = student["student_id"]
             logger.info(f"处理学生 {student_id} - {student['name']}")
 
-            # 修改点：优先使用预处理后的图片
             with engine.connect() as conn:
                 images = conn.execute(
                     text("""
@@ -666,17 +668,14 @@ async def process_grading(exam_id: int, job_id: int):
                     conn.commit()
                 continue
 
-            # 直接使用已有的图片路径（可能是预处理后的图片）
             image_paths = [row.file_path for row in images]
 
-            # 第一次 OCR 识别
             ocr_result = ocr_only(image_paths, questions)
             if ocr_result is None:
                 ocr_result = {}
                 logger.warning("ocr_only 返回 None，使用空字典")
             original_answers = {order: info["answer"] for order, info in ocr_result.items()}
 
-            # 如果全部为空，尝试使用原始图片再次识别（此逻辑保留）
             if all(len(ans) == 0 for ans in original_answers.values()):
                 logger.warning("预处理图片OCR结果为空，尝试使用原始图片重新识别...")
                 with engine.connect() as conn:
@@ -710,18 +709,11 @@ async def process_grading(exam_id: int, job_id: int):
                     ocr_result[order]["answer"] = new_ans
                     logger.info(f"拆分填空题 {order}: 新答案 = {new_ans}")
 
-            # 根据参考答案重排序
-            reordered = reorder_answers_by_reference(questions,
-                                                     {order: info["answer"] for order, info in ocr_result.items()})
-            for order, ans in reordered.items():
-                ocr_result[order]["answer"] = ans
-
             # ---------- 选择题答案合法性检查，触发条件纠错 ----------
             choice_orders = [q['question_order'] for q in questions if q.get('type') in ('choice', '选择题')]
             invalid_choices = []
             for order in choice_orders:
                 ans = ocr_result.get(order, {}).get("answer", "")
-                # 只允许字母、空格，且至少要有一个字母
                 if ans.strip() and not re.fullmatch(r'[A-Za-z\s]+', ans):
                     invalid_choices.append(order)
                     logger.warning(f"选择题 {order} 答案异常: '{ans}'")
@@ -729,8 +721,7 @@ async def process_grading(exam_id: int, job_id: int):
             if invalid_choices:
                 logger.info(f"发现 {len(invalid_choices)} 道选择题答案异常，调用纠错模型...")
                 corrected_answers = correct_answers_with_image(image_paths,
-                                                               {order: info["answer"] for order, info in
-                                                                ocr_result.items()},
+                                                               {order: info["answer"] for order, info in ocr_result.items()},
                                                                questions)
                 for order, new_ans in corrected_answers.items():
                     if order in invalid_choices and new_ans != ocr_result[order]["answer"]:
@@ -738,7 +729,6 @@ async def process_grading(exam_id: int, job_id: int):
                         ocr_result[order]["answer"] = new_ans
             else:
                 logger.info("所有选择题答案格式正常，跳过纠错模型")
-            # -------------------------------------------------------------
 
             # ---------- 全局填空题答案清洗（兜底） ----------
             for q in questions:
@@ -754,9 +744,28 @@ async def process_grading(exam_id: int, job_id: int):
                         if cleaned and cleaned != ans:
                             logger.info(f"全局清洗填空题 {order}: '{ans}' -> '{cleaned}'")
                             ocr_result[order]["answer"] = cleaned
-            # --------------------------------------------------
 
-            # 评分
+            # ---------- 手写题号智能清空 ----------
+            total_questions = len(questions)
+            for q in questions:
+                order = q['question_order']
+                ans = ocr_result.get(order, {}).get("answer", "")
+                if not ans:
+                    continue
+                m = re.fullmatch(r'\s*(\d{1,3})\s*[\.、]\s*', ans)
+                if m:
+                    num_val = int(m.group(1))
+                    if 1 <= num_val <= total_questions:
+                        logger.info(f"题号 {order} 答案疑似手写题号，已清空: '{ans}'")
+                        ocr_result[order]["answer"] = ""
+
+            # ===== 诊断日志：输出当前填空题答案 =====
+            fill_orders = [q['question_order'] for q in questions if q.get('type') in ['填空题', 'fill_blank']]
+            for o in fill_orders:
+                logger.info(f"诊断：填空题 {o} 最终答案 = '{ocr_result.get(o, {}).get('answer', '')}'")
+            # ====================================
+
+            # 评分（保持原样）
             total_score = 0.0
             for q in questions:
                 qid = q["id"]
@@ -771,11 +780,13 @@ async def process_grading(exam_id: int, job_id: int):
                 with engine.connect() as conn:
                     conn.execute(
                         text("""
-                        INSERT INTO student_scores (exam_id, student_id, question_id, score, student_answer)
-                        VALUES (:exam_id, :student_id, :question_id, :score, :student_answer)
-                        ON DUPLICATE KEY UPDATE
-                        score = VALUES(score), student_answer = VALUES(student_answer), updated_at = CURRENT_TIMESTAMP
-                        """),
+                             INSERT INTO student_scores (exam_id, student_id, question_id, score, student_answer)
+                             VALUES (:exam_id, :student_id, :question_id, :score, :student_answer) ON DUPLICATE KEY
+                             UPDATE
+                                 score =
+                             VALUES (score), student_answer =
+                             VALUES (student_answer), updated_at = CURRENT_TIMESTAMP
+                             """),
                         {
                             "exam_id": exam_id,
                             "student_id": student_id,

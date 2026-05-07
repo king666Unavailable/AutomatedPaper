@@ -299,6 +299,7 @@ const fetchStudentList = async () => {
 }
 
 // 处理文件夹导入（使用 imagesPerStudent）
+// 处理文件夹导入（使用 imagesPerStudent）
 const handleImportFolder = async () => {
   const students = (props.students && props.students.length) ? props.students : studentList.value
   if (!students || students.length === 0) {
@@ -314,14 +315,18 @@ const handleImportFolder = async () => {
 
   input.onchange = async (e) => {
     const files = Array.from(e.target.files)
-    const imageFiles = files.filter(f => /\.(jpg|jpeg|png|bmp)$/i.test(f.name))
+    // 筛选图片并按文件名自然排序（数字敏感，如 1,2,10 而非 1,10,2）
+    const imageFiles = files
+      .filter(f => /\.(jpg|jpeg|png|bmp)$/i.test(f.name))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+
     if (imageFiles.length === 0) {
       ElMessage.error('文件夹中没有图片文件')
       return
     }
 
     const totalStudents = students.length
-    const imagesPerStudent = props.imagesPerStudent   // 使用动态设置
+    const imagesPerStudent = props.imagesPerStudent
     const requiredImages = totalStudents * imagesPerStudent
 
     if (imageFiles.length < requiredImages) {

@@ -13,6 +13,7 @@ import requests
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from backend.database import get_db
+from PIL import Image, ExifTags
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,66 @@ def ensure_upload_dir(exam_id: int) -> str:
 
 
 # ==================== 答题卡预处理函数 ====================
+def auto_orient(image: np.ndarray, image_path: str) -> np.ndarray:
+    """
+    智能方向纠正：如果宽高比异常，则用模型检测文字方向，并根据结果旋转。
+    参数 image_path 用于模型识别（仅当宽高比异常时调用）。
+    """
+    h, w = image.shape[:2]
+    # 仅当宽明显大于高时才检查文字方向，避免不必要的模型调用
+    if w > h * 1.2:
+        orientation = detect_text_orientation(image_path)
+        if orientation == 'rotated_left':
+            # 文字逆时针旋转90度，图片需要顺时针旋转90度
+            # 假设原图文字是逆时针转90度的
+            # 需要顺时针旋转90度才能让文字水平。这里我们用 cv2.ROTATE_90_CLOCKWISE
+            logger.info("检测到文字逆时针旋转90度，进行顺时针90度校正")
+            image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+        elif orientation == 'rotated_right':
+            logger.info("检测到文字顺时针旋转90度，进行逆时针90度校正")
+            image = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        # normal 或 未知则不旋转
+    return image
+
+def correct_exif_orientation(image_path: str) -> np.ndarray:
+    """
+    根据图片的EXIF旋转信息自动转正，返回BGR格式图像。
+    如果无法读取或没有旋转信息，返回原图。
+    """
+    try:
+        pil_img = Image.open(image_path)
+        # 检查EXIF中的方向标签
+        exif = pil_img._getexif()
+        if exif is not None:
+            orientation = exif.get(0x0112)  # 0x0112 = Orientation tag
+            if orientation:
+                # 根据方向值旋转/翻转
+                if orientation == 2:
+                    pil_img = pil_img.transpose(Image.FLIP_LEFT_RIGHT)
+                elif orientation == 3:
+                    pil_img = pil_img.rotate(180, expand=True)
+                elif orientation == 4:
+                    pil_img = pil_img.transpose(Image.FLIP_TOP_BOTTOM)
+                elif orientation == 5:
+                    pil_img = pil_img.rotate(-90, expand=True).transpose(Image.FLIP_LEFT_RIGHT)
+                elif orientation == 6:
+                    pil_img = pil_img.rotate(-90, expand=True)   # 常见：顺时针90度转正
+                elif orientation == 7:
+                    pil_img = pil_img.rotate(90, expand=True).transpose(Image.FLIP_LEFT_RIGHT)
+                elif orientation == 8:
+                    pil_img = pil_img.rotate(90, expand=True)
+                # 其他值不处理
+        # 转为OpenCV BGR格式
+        pil_img = pil_img.convert('RGB')
+        open_cv_image = np.array(pil_img)
+        open_cv_image = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2BGR)
+        return open_cv_image
+    except Exception as e:
+        # 如果读取失败，回退到cv2.imread
+        logger.warning(f"EXIF校正失败: {e}，使用cv2.imread")
+        return cv2.imread(image_path)
 
 def deskew_image(image: np.ndarray) -> np.ndarray:
-    """自动检测倾斜角度并旋转校正"""
     if len(image.shape) == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     else:
@@ -75,7 +133,6 @@ def deskew_image(image: np.ndarray) -> np.ndarray:
 
 
 def enhance_text_clarity(gray: np.ndarray) -> np.ndarray:
-    """温和增强对比度并轻量锐化"""
     clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     denoised = cv2.bilateralFilter(enhanced, 5, 30, 30)
@@ -88,7 +145,6 @@ def enhance_text_clarity(gray: np.ndarray) -> np.ndarray:
 
 
 def detect_and_remove_strikethroughs(gray: np.ndarray) -> np.ndarray:
-    """检测划线、涂抹并 inpaint 修复"""
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
     kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 1))
@@ -122,10 +178,6 @@ def detect_and_remove_strikethroughs(gray: np.ndarray) -> np.ndarray:
 
 
 def detect_regions_with_vlm(image_path: str, questions_per_section: List[int]) -> Optional[List[int]]:
-    """
-    调用多模态视觉模型检测答题卡上各题型区域的纵向分界位置。
-    返回区域分界 y 像素坐标列表（长度 = 题型数 - 1），若失败返回 None。
-    """
     try:
         with open(image_path, "rb") as f:
             img_base64 = base64.b64encode(f.read()).decode("utf-8")
@@ -162,20 +214,20 @@ def detect_regions_with_vlm(image_path: str, questions_per_section: List[int]) -
         raw = result["output"]["choices"][0]["message"]["content"][0]["text"]
         logger.info(f"VLM区域检测原始返回: {raw}")
 
-        # 解析 JSON 数组
         cleaned = re.sub(r'^```json\s*', '', raw.strip())
         cleaned = re.sub(r'\s*```$', '', cleaned)
         ratios = json.loads(cleaned)
         if not isinstance(ratios, list) or len(ratios) != num_sections - 1:
             return None
 
-        # 转换为像素 y 坐标（基于当前图片高度）
-        img = cv2.imread(image_path)
+        img = correct_exif_orientation(image_path)
+        if img is None:
+            logger.error(f"无法读取图片: {image_path}")
+            return None
         if img is None:
             return None
         h = img.shape[0]
         y_coords = [int(r * h) for r in ratios if 0 < r < 1]
-        # 确保递增且过滤掉太靠近边缘的值
         y_coords = [y for y in y_coords if 30 < y < h - 30]
         y_coords.sort()
         if len(y_coords) == num_sections - 1:
@@ -192,10 +244,6 @@ def draw_question_regions(image: np.ndarray,
                           questions_per_section: List[int],
                           section_types: List[str] = None,
                           divider_ys: List[int] = None) -> np.ndarray:
-    """
-    绘制半透明底色区域并标注题型名称。
-    若提供 divider_ys，则直接使用这些 y 坐标作为区域边界；否则均分图像高度。
-    """
     num_sections = len(questions_per_section)
     if num_sections == 0:
         return image
@@ -236,7 +284,6 @@ def draw_question_regions(image: np.ndarray,
 def draw_question_dividers(image: np.ndarray,
                            layout: Optional[List[dict]] = None,
                            questions_per_section: Optional[List[int]] = None) -> np.ndarray:
-    """简单线条分割（无底色），用于手动布局或默认三等分"""
     h, w = image.shape[:2]
     if not layout and questions_per_section:
         total_q = sum(questions_per_section)
@@ -270,30 +317,33 @@ def preprocess_answer_sheet(image_path: str,
                             questions_per_section: Optional[List[int]] = None,
                             section_types: Optional[List[str]] = None) -> Optional[np.ndarray]:
     """
-    完整预处理：倾斜校正 → 增强 → 划痕遮盖 → 自动检测/均分区域 → 绘制标注。
+    完整预处理：自动旋转纠正 → 倾斜校正 → 增强 → 划痕遮盖 → 区域划分/绘制。
+    返回处理后的彩色图像。
     """
     img = cv2.imread(image_path)
     if img is None:
         logger.error(f"无法读取图片: {image_path}")
         return None
 
+    # 0. 智能方向纠正
+    img = auto_orient(img, image_path)
+
+    # 1. 倾斜校正
     img = deskew_image(img)
+
+    # 2. 灰度化 + 增强
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = enhance_text_clarity(gray)
+
+    # 3. 划痕/涂抹遮盖
     gray = detect_and_remove_strikethroughs(gray)
+
+    # 4. 转回三通道并绘制区域/分割线
     result = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-    # 尝试使用 VLM 自动检测分割线（可通过配置关闭）
-    auto_dividers = None
-    if questions_per_section and MM_MODEL_CONFIG.get("enable_region_detection", False):
-        auto_dividers = detect_regions_with_vlm(image_path, questions_per_section)
-
+    # 5. 区域划分
     if questions_per_section:
-        if auto_dividers and len(auto_dividers) >= len(questions_per_section) - 1:
-            result = draw_question_regions(result, questions_per_section,
-                                           section_types, divider_ys=auto_dividers)
-        else:
-            result = draw_question_regions(result, questions_per_section, section_types)
+        result = draw_question_regions(result, questions_per_section, section_types)
     elif layout:
         result = draw_question_dividers(result, layout)
     else:
@@ -301,6 +351,115 @@ def preprocess_answer_sheet(image_path: str,
 
     return result
 
+
+# ==================== 姓名识别与匹配函数 ====================
+def detect_text_orientation(image_path: str) -> str:
+    """
+    使用多模态模型检测图片中文字的方向。
+    返回 'normal'、'rotated_left' 或 'rotated_right'。
+    失败时返回 'normal'。
+    """
+    try:
+        with open(image_path, "rb") as f:
+            img_base64 = base64.b64encode(f.read()).decode("utf-8")
+        mime_type = "image/jpeg" if not image_path.lower().endswith('.png') else "image/png"
+
+        prompt = (
+            "请判断这张图片中文字的方向："
+            "如果文字是正常的水平方向，回答 'normal'；"
+            "如果文字逆时针旋转了90度（需要顺时针旋转90度才能读），回答 'rotated_left'；"
+            "如果文字顺时针旋转了90度，回答 'rotated_right'。"
+            "只回答一个词，不要解释。"
+        )
+        content = [
+            {"text": prompt},
+            {"image": f"data:{mime_type};base64,{img_base64}"}
+        ]
+        body = {
+            "model": MM_MODEL_CONFIG["model"],
+            "input": {"messages": [{"role": "user", "content": content}]},
+            "parameters": {"result_format": "message", "temperature": 0.0}
+        }
+        headers = {
+            "Authorization": f"Bearer {MM_MODEL_CONFIG['api_key']}",
+            "Content-Type": "application/json"
+        }
+        resp = requests.post(MM_MODEL_CONFIG["api_url"], headers=headers, json=body,
+                             timeout=MM_MODEL_CONFIG["timeout"])
+        resp.raise_for_status()
+        result = resp.json()
+        answer = result["output"]["choices"][0]["message"]["content"][0]["text"].strip().lower()
+        logger.info(f"文字方向检测结果: {answer}")
+        if answer in ('normal', 'rotated_left', 'rotated_right'):
+            return answer
+        else:
+            return 'normal'
+    except Exception as e:
+        logger.warning(f"文字方向检测失败: {e}")
+        return 'normal'
+
+def extract_student_name(image_path: str) -> str:
+    """
+    使用多模态模型从答题卡第一页提取学生姓名。
+    返回提取到的姓名文本，如果失败返回空字符串。
+    """
+    try:
+        with open(image_path, "rb") as f:
+            img_base64 = base64.b64encode(f.read()).decode("utf-8")
+        mime_type = "image/jpeg" if not image_path.lower().endswith('.png') else "image/png"
+
+        prompt = "请从这张答题卡图片中提取学生的姓名（仅输出姓名，不要其他内容）。如果找不到姓名，输出空字符串。"
+        content = [
+            {"text": prompt},
+            {"image": f"data:{mime_type};base64,{img_base64}"}
+        ]
+        body = {
+            "model": MM_MODEL_CONFIG["model"],
+            "input": {"messages": [{"role": "user", "content": content}]},
+            "parameters": {"result_format": "message", "temperature": 0.0}
+        }
+        headers = {
+            "Authorization": f"Bearer {MM_MODEL_CONFIG['api_key']}",
+            "Content-Type": "application/json"
+        }
+        resp = requests.post(MM_MODEL_CONFIG["api_url"], headers=headers, json=body, timeout=MM_MODEL_CONFIG["timeout"])
+        resp.raise_for_status()
+        result = resp.json()
+        name = result["output"]["choices"][0]["message"]["content"][0]["text"].strip()
+        logger.info(f"识别到学生姓名: {name}")
+        return name
+    except Exception as e:
+        logger.warning(f"姓名识别失败: {e}")
+        return ""
+
+def match_student(name: str, exam_id: int) -> Optional[int]:
+    """
+    在考试的学生名单中模糊匹配姓名，返回 student_id，若找不到返回 None。
+    """
+    if not name:
+        return None
+    try:
+        with engine.connect() as conn:
+            students = conn.execute(
+                text("""
+                    SELECT s.student_id, s.name FROM students s
+                    JOIN exam_students es ON s.student_id = es.student_id
+                    WHERE es.exam_id = :exam_id
+                """),
+                {"exam_id": exam_id}
+            ).fetchall()
+            # 完全匹配
+            for row in students:
+                if row.name == name:
+                    return row.student_id
+            # 包含匹配
+            for row in students:
+                if name in row.name or row.name in name:
+                    return row.student_id
+            return None
+    except Exception as e:
+        logger.error(f"匹配学生失败: {e}")
+        return None
 
 # ==================== API 端点 ====================
 
@@ -351,48 +510,80 @@ def get_exam_images(exam_id: int):
         logger.error(f"获取考试图片列表失败 (exam_id={exam_id}): {str(e)}")
         raise HTTPException(status_code=500, detail="获取图片列表失败")
 
-
 @router.post("/api/exams/{exam_id}/images")
 async def upload_exam_images(
         exam_id: int,
         files: List[UploadFile] = File(...),
-        student_ids: List[int] = Form(...)
+        student_ids: List[int] = Form([]),
+        auto_match: bool = Form(False)
 ):
-    if len(student_ids) == 1 and len(files) > 1:
-        student_ids = student_ids * len(files)
-    elif len(student_ids) != len(files):
-        raise HTTPException(status_code=400, detail="文件数量与学生ID数量不匹配")
-
+    # 验证考试，同时获取 images_per_student
     try:
         with engine.connect() as conn:
             exam = conn.execute(
-                text("SELECT exam_id, answer_sheet_layout FROM exams WHERE exam_id = :exam_id"),
+                text("SELECT exam_id, answer_sheet_layout, images_per_student FROM exams WHERE exam_id = :exam_id"),
                 {"exam_id": exam_id}
             ).fetchone()
             if not exam:
                 raise HTTPException(status_code=404, detail=f"考试 {exam_id} 不存在")
             exam_layout = exam.answer_sheet_layout
+            images_per_student = exam.images_per_student or 1
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"验证考试失败: {str(e)}")
         raise HTTPException(status_code=500, detail="验证考试失败")
 
-    try:
-        with engine.connect() as conn:
-            for sid in set(student_ids):
-                student_in_exam = conn.execute(
-                    text("SELECT 1 FROM exam_students WHERE exam_id = :exam_id AND student_id = :student_id"),
-                    {"exam_id": exam_id, "student_id": sid}
-                ).fetchone()
-                if not student_in_exam:
-                    raise HTTPException(status_code=400, detail=f"学生 {sid} 未参加考试 {exam_id}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"验证学生失败: {str(e)}")
-        raise HTTPException(status_code=500, detail="验证学生失败")
+    # 姓名匹配模式
+    if auto_match:
+        if len(files) % images_per_student != 0:
+            raise HTTPException(status_code=400,
+                                detail=f"总文件数({len(files)})应为每名学生图片数({images_per_student})的整数倍")
+        student_ids = []
+        temp_dir = ensure_upload_dir(exam_id)
+        group_count = len(files) // images_per_student
+        for g in range(group_count):
+            first_idx = g * images_per_student
+            first_file = files[first_idx]
+            temp_name = f"temp_{int(time.time())}_{g}_{first_file.filename}"
+            temp_path = os.path.join(temp_dir, temp_name)
+            try:
+                with open(temp_path, "wb") as buffer:
+                    shutil.copyfileobj(first_file.file, buffer)
+                name = extract_student_name(temp_path)
+                if not name:
+                    raise HTTPException(status_code=400, detail=f"第{g+1}组图片未能识别到姓名，请检查图片或手动上传")
+                sid = match_student(name, exam_id)
+                if sid is None:
+                    raise HTTPException(status_code=400, detail=f"无法将姓名'{name}'匹配到考试中的任何学生，请手动上传")
+                student_ids.extend([sid] * images_per_student)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                await first_file.seek(0)
+    else:
+        # 顺序模式：原有的验证逻辑
+        if len(student_ids) == 1 and len(files) > 1:
+            student_ids = student_ids * len(files)
+        elif len(student_ids) != len(files):
+            raise HTTPException(status_code=400, detail="文件数量与学生ID数量不匹配")
 
+        try:
+            with engine.connect() as conn:
+                for sid in set(student_ids):
+                    student_in_exam = conn.execute(
+                        text("SELECT 1 FROM exam_students WHERE exam_id = :exam_id AND student_id = :student_id"),
+                        {"exam_id": exam_id, "student_id": sid}
+                    ).fetchone()
+                    if not student_in_exam:
+                        raise HTTPException(status_code=400, detail=f"学生 {sid} 未参加考试 {exam_id}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"验证学生失败: {str(e)}")
+            raise HTTPException(status_code=500, detail="验证学生失败")
+
+    # 获取题目分布（用于预处理分割线）
     questions_per_section = []
     section_types = []
     try:
@@ -417,6 +608,7 @@ async def upload_exam_images(
     except Exception as e:
         logger.warning(f"获取题目分布失败: {e}")
 
+    # 手动布局解析
     layout = None
     if exam_layout:
         try:

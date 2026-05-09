@@ -1,9 +1,18 @@
 <template>
-  <div class="answer-manager">
+  <div
+    class="answer-manager"
+    v-loading="folderUploading || uploadingSingle"
+    element-loading-text="正在上传图片，请稍候..."
+    element-loading-background="rgba(255, 255, 255, 0.8)"
+  >
     <div class="tab-actions">
       <el-button type="primary" @click="openUploadDialog">上传图片</el-button>
       <el-button @click="fetchStudentImages">刷新</el-button>
       <el-button type="success" @click="handleImportFolder">导入文件夹</el-button>
+      <el-radio-group v-model="autoMatchMode" style="margin-left: 15px;">
+        <el-radio :label="false">顺序对应</el-radio>
+        <el-radio :label="true">姓名匹配</el-radio>
+      </el-radio-group>
     </div>
 
     <!-- 学生表格（每个学生一行，展示其多张图片） -->
@@ -60,9 +69,15 @@
     </el-table>
 
     <!-- 上传对话框（批量上传到指定学生） -->
-    <el-dialog v-model="showUploadDialog" title="上传答题卡图片" width="600px">
+        <el-dialog v-model="showUploadDialog" title="上传答题卡图片" width="600px">
       <el-form label-width="100px">
-        <el-form-item label="选择学生">
+        <el-form-item label="匹配模式">
+          <el-radio-group v-model="autoMatchMode" @change="onModeChange">
+            <el-radio :label="false">顺序对应（需选学生）</el-radio>
+            <el-radio :label="true">自动姓名匹配</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="选择学生" v-if="!autoMatchMode">
           <el-select v-model="uploadStudentId" placeholder="请选择学生" filterable>
             <el-option
               v-for="s in studentList"
@@ -83,7 +98,12 @@
           >
             <el-button>选择文件</el-button>
             <template #tip>
-              <div class="el-upload__tip">可多选，每张图片将按顺序分配页码（0,1,2...）</div>
+              <div class="el-upload__tip" v-if="autoMatchMode">
+                每组 {{ imagesPerStudent }} 张图片，按学生顺序选择，系统将自动识别第一张姓名
+              </div>
+              <div class="el-upload__tip" v-else>
+                可多选，每张图片将按顺序分配页码（0,1,2...）
+              </div>
             </template>
           </el-upload>
         </el-form-item>
@@ -128,6 +148,16 @@ const uploadFileList = ref([])
 // 上传文件夹状态
 const folderUploading = ref(false)
 
+const uploadingSingle = ref(false)   // 手动上传状态
+
+// 新增自动匹配模式标志
+const autoMatchMode = ref(false)   // 默认顺序对应
+
+// 模式切换时清空学生选择
+const onModeChange = () => {
+  uploadStudentId.value = null
+}
+
 // 获取图片URL（优先使用预处理后的图片）
 const getImageUrl = (img) => {
   const filePath = img.processed_file_path || img.file_path
@@ -137,7 +167,7 @@ const getImageUrl = (img) => {
   return `http://localhost:8001/uploads/${relative}`
 }
 
-// 获取考试所有学生的图片并组装数据
+// 获取考试所有学生的图片并组装数据（带去重）
 const fetchStudentImages = async () => {
   try {
     const studentsRes = await axios.get(`http://localhost:8001/api/exams/${props.examId}/students`)
@@ -157,14 +187,29 @@ const fetchStudentImages = async () => {
     const imgMap = new Map()
     for (const img of images) {
       const sid = img.student.student_id
-      if (!imgMap.has(sid)) imgMap.set(sid, [])
+      if (!imgMap.has(sid)) {
+        imgMap.set(sid, [])
+      }
       imgMap.get(sid).push(img)
     }
 
-    const list = students.map(student => ({
-      ...student,
-      images: (imgMap.get(student.student_id) || []).sort((a, b) => a.page_order - b.page_order)
-    }))
+    const list = students.map(student => {
+      const studentImages = imgMap.get(student.student_id) || []
+      // 按 id 去重，然后按 page_order 排序
+      const uniqueImages = []
+      const seenIds = new Set()
+      for (const img of studentImages) {
+        if (!seenIds.has(img.id)) {
+          seenIds.add(img.id)
+          uniqueImages.push(img)
+        }
+      }
+      uniqueImages.sort((a, b) => a.page_order - b.page_order)
+      return {
+        ...student,
+        images: uniqueImages
+      }
+    })
     studentList.value = list
   } catch (error) {
     console.error('获取数据失败:', error)
@@ -185,10 +230,6 @@ const openUploadDialog = () => {
 
 // 上传图片（单学生多张）
 const uploadImages = async () => {
-  if (!uploadStudentId.value) {
-    ElMessage.error('请选择学生')
-    return
-  }
   if (uploadFileList.value.length === 0) {
     ElMessage.error('请选择图片文件')
     return
@@ -198,8 +239,18 @@ const uploadImages = async () => {
   for (const file of uploadFileList.value) {
     formData.append('files', file.raw)
   }
-  formData.append('student_ids', uploadStudentId.value)
 
+  if (autoMatchMode.value) {
+    formData.append('auto_match', true)
+  } else {
+    if (!uploadStudentId.value) {
+      ElMessage.error('请选择学生')
+      return
+    }
+    formData.append('student_ids', uploadStudentId.value)
+  }
+
+  uploadingSingle.value = true   // 显示加载遮罩
   try {
     const response = await axios.post(
       `http://localhost:8001/api/exams/${props.examId}/images`,
@@ -217,6 +268,8 @@ const uploadImages = async () => {
   } catch (error) {
     console.error('上传失败:', error)
     ElMessage.error('上传失败')
+  } finally {
+    uploadingSingle.value = false   // 隐藏加载遮罩
   }
 }
 
@@ -299,7 +352,6 @@ const fetchStudentList = async () => {
 }
 
 // 处理文件夹导入（使用 imagesPerStudent）
-// 处理文件夹导入（使用 imagesPerStudent）
 const handleImportFolder = async () => {
   const students = (props.students && props.students.length) ? props.students : studentList.value
   if (!students || students.length === 0) {
@@ -315,7 +367,6 @@ const handleImportFolder = async () => {
 
   input.onchange = async (e) => {
     const files = Array.from(e.target.files)
-    // 筛选图片并按文件名自然排序（数字敏感，如 1,2,10 而非 1,10,2）
     const imageFiles = files
       .filter(f => /\.(jpg|jpeg|png|bmp)$/i.test(f.name))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
@@ -334,12 +385,16 @@ const handleImportFolder = async () => {
       return
     }
 
+    // 生成组（每组包含属于同一学生的图片）
     const groups = []
     for (let i = 0; i < totalStudents; i++) {
       const student = students[i]
       const startIdx = i * imagesPerStudent
       const studentImages = imageFiles.slice(startIdx, startIdx + imagesPerStudent)
-      groups.push({ studentId: student.student_id, files: studentImages })
+      groups.push({
+        studentId: student.student_id,   // 顺序模式下需要
+        files: studentImages
+      })
     }
 
     try {
@@ -361,7 +416,14 @@ const handleImportFolder = async () => {
       for (const file of group.files) {
         formData.append('files', file)
       }
-      formData.append('student_ids', group.studentId)
+      // 根据全局模式决定参数
+      if (autoMatchMode.value) {
+        // 姓名匹配模式
+        formData.append('auto_match', true)
+      } else {
+        // 顺序模式
+        formData.append('student_ids', group.studentId)
+      }
 
       try {
         const res = await axios.post(
@@ -373,11 +435,11 @@ const handleImportFolder = async () => {
           successCount += group.files.length
         } else {
           failCount += group.files.length
-          console.error(`学生 ${group.studentId} 上传失败:`, res.data.msg)
+          console.error(`学生 ${group.studentId} 组上传失败:`, res.data.msg)
         }
       } catch (err) {
         failCount += group.files.length
-        console.error(`学生 ${group.studentId} 上传异常:`, err)
+        console.error(`学生 ${group.studentId} 组上传异常:`, err)
       }
     }
 

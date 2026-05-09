@@ -23,6 +23,10 @@
         <el-icon><Download /></el-icon>
         导出客观题答案
       </el-button>
+      <el-button type="warning" @click="exportSubjectiveAnswers">
+        <el-icon><Download /></el-icon>
+        导出主观题答案
+      </el-button>
     </div>
 
     <div class="ai-grading-status" v-if="aiGradingInProgress">
@@ -161,6 +165,8 @@ const updatingScores = ref(new Set())
 
 // 考试总分（用于校验）
 const examTotalScore = ref(null)
+// 考试名称（用于导出文件名）
+const examName = ref('')
 
 const ungradedCount = computed(() => props.scores.total - props.scores.graded)
 const gradedCount = computed(() => props.scores.graded)
@@ -173,7 +179,7 @@ const fetchStudentScores = async () => {
     if (res.data.code === 1) {
       const data = res.data.data
       examTotalScore.value = data.exam_info?.total_score ?? null
-      // 直接使用后端数据，不再添加识别状态标记
+      examName.value = data.exam_info?.exam_name ?? ''   // 保存考试名称
       studentScoreList.value = data.students || []
     } else {
       ElMessage.error(res.data.msg || '获取成绩失败')
@@ -267,14 +273,12 @@ const startRating = async (question) => {
 const triggerAIGrading = async () => {
   try {
     aiGradingInProgress.value = true
-    aiGradingMessage.value = '正在启动阅卷任务...'
     aiGradingProgress.value = 0
 
     const startRes = await axios.post(`/api/exams/${props.examId}/grade`)
     if (startRes.data.code !== 1) throw new Error(startRes.data.msg || '启动失败')
     const { job_id } = startRes.data.data
 
-    aiGradingMessage.value = '阅卷任务已启动，正在处理...'
     let finished = false
     while (!finished) {
       await new Promise(resolve => setTimeout(resolve, 2000))
@@ -282,12 +286,16 @@ const triggerAIGrading = async () => {
       if (statusRes.data.code !== 1) throw new Error(statusRes.data.msg)
       const { status, total_students, processed_students } = statusRes.data.data
 
+      // 只要有学生总数就开始计算进度（哪怕 processed 还是 0）
       if (total_students > 0) {
         aiGradingProgress.value = Math.floor((processed_students / total_students) * 100)
+      } else {
+        aiGradingProgress.value = 0   // 还没拿到总数时显示 0%
       }
+
       if (status === 'completed') {
+        aiGradingProgress.value = 100
         finished = true
-        aiGradingMessage.value = '阅卷完成'
         ElMessage.success(`阅卷完成，共处理 ${total_students} 名学生`)
         await fetchStudentScores()
         emit('refresh')
@@ -299,7 +307,6 @@ const triggerAIGrading = async () => {
   } catch (error) {
     console.error(error)
     aiGradingStatus.value = 'exception'
-    aiGradingMessage.value = error.message || 'AI阅卷失败'
     ElMessage.error(error.message || 'AI阅卷失败')
   } finally {
     aiGradingInProgress.value = false
@@ -324,7 +331,31 @@ const exportObjectiveAnswers = async () => {
     const url = window.URL.createObjectURL(new Blob([response.data]))
     const link = document.createElement('a')
     link.href = url
-    link.setAttribute('download', `exam_${props.examId}_objective_answers.xlsx`)
+    // 文件名格式：exam_考试名称_考试ID_objective_answers.xlsx
+    const name = examName.value || `考试${props.examId}`
+    link.setAttribute('download', `exam_${name}_${props.examId}_objective_answers.xlsx`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch (error) {
+    console.error('导出失败:', error)
+    ElMessage.error('导出失败')
+  }
+}
+
+// 导出主观题答案
+const exportSubjectiveAnswers = async () => {
+  try {
+    const response = await axios.get(`/api/exams/${props.examId}/export-subjective`, {
+      responseType: 'blob'
+    })
+    const url = window.URL.createObjectURL(new Blob([response.data]))
+    const link = document.createElement('a')
+    link.href = url
+    const name = examName.value || `考试${props.examId}`
+    link.setAttribute('download', `exam_${name}_${props.examId}_subjective_answers.xlsx`)
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -342,72 +373,17 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.ai-grading-container {
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-.ai-grading-header {
-  text-align: center;
-}
-.ai-grading-header h3 {
-  margin: 0 0 8px 0;
-  color: #374151;
-  font-size: 1.5rem;
-  font-weight: 600;
-}
-.ai-grading-header p {
-  margin: 0;
-  color: #6b7280;
-  font-size: 1rem;
-}
-.ai-grading-actions {
-  display: flex;
-  justify-content: center;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-.ai-grading-status {
-  text-align: center;
-  padding: 20px;
-  background: #f9fafb;
-  border-radius: 8px;
-}
-.ai-grading-status p {
-  margin: 12px 0 0 0;
-  color: #374151;
-  font-weight: 500;
-}
-.ai-grading-info {
-  margin-top: 24px;
-}
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 24px;
-  margin-top: 16px;
-}
-.stat-item {
-  text-align: center;
-  padding: 20px;
-  background: #f9fafb;
-  border-radius: 8px;
-  transition: all 0.2s;
-}
-.stat-item:hover {
-  background: #f3f4f6;
-  transform: translateY(-2px);
-}
-.stat-value {
-  font-size: 2rem;
-  font-weight: bold;
-  color: #3b82f6;
-  margin-bottom: 8px;
-}
-.stat-label {
-  font-size: 0.9rem;
-  color: #6b7280;
-  font-weight: 500;
-}
+.ai-grading-container { padding: 20px; display: flex; flex-direction: column; gap: 24px; }
+.ai-grading-header { text-align: center; }
+.ai-grading-header h3 { margin: 0 0 8px 0; color: #374151; font-size: 1.5rem; font-weight: 600; }
+.ai-grading-header p { margin: 0; color: #6b7280; font-size: 1rem; }
+.ai-grading-actions { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; }
+.ai-grading-status { text-align: center; padding: 20px; background: #f9fafb; border-radius: 8px; }
+.ai-grading-status p { margin: 12px 0 0 0; color: #374151; font-weight: 500; }
+.ai-grading-info { margin-top: 24px; }
+.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 16px; }
+.stat-item { text-align: center; padding: 20px; background: #f9fafb; border-radius: 8px; transition: all 0.2s; }
+.stat-item:hover { background: #f3f4f6; transform: translateY(-2px); }
+.stat-value { font-size: 2rem; font-weight: bold; color: #3b82f6; margin-bottom: 8px; }
+.stat-label { font-size: 0.9rem; color: #6b7280; font-weight: 500; }
 </style>

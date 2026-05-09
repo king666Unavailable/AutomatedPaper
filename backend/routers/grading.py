@@ -284,7 +284,7 @@ def refine_subjective_answers(
     questions: List[dict]
 ) -> Dict[int, str]:
     """
-    专门用于简答题/主观题的二次提取，强调小题号的完整提取与合并。
+    专门用于简答题/主观题的二次提取，强调完整提取，无视原始答案（如果原始答案过短）。
     """
     if not image_paths:
         return {}
@@ -293,15 +293,20 @@ def refine_subjective_answers(
     for q in questions:
         order = q['question_order']
         q_content = q.get('content', '')[:80]
+        orig = original_answers.get(order, '')
+        # 如果原答案超过30字符，可能已经较完整，提供给模型参考；否则提示原答案可能缺失
+        hint = f"原识别结果（可能不完整） = '{orig}'" if len(orig) < 30 else f"原识别结果 = '{orig}'"
         q_descriptions.append(
-            f"第{order}题（主观题）：题目内容：{q_content}\n原识别结果 = '{original_answers.get(order, '')}'"
+            f"第{order}题（主观题）：题目内容：{q_content}\n{hint}"
         )
 
     prompt = (
         "你是一个补充提取工具，需要根据答题卡图片重新提取主观题（简答题/论述题等）的完整学生答案。\n"
         "请特别注意：该类题目答案中可能包含多个小题号（如①、②、(1)、(2)、a)、b) 等），"
         "你必须提取每一个小题号后的手写内容，并将它们按顺序用换行符连接成一个完整的字符串。\n"
+        "如果答题区域内有大片手写文字，但原识别结果很短，说明原识别结果可能严重遗漏，你必须**完整扫描整个答题区域**，提取所有手写内容，即使书写潦草也不要遗漏。\n"
         "即使部分小题答案为空白，也要保留空行或明确标记，但最终返回的字符串中应包含所有能找到的小题答案。\n"
+        "不要受原始识别结果的限制，如果两者冲突，以图片实际内容为准。\n"
         "以下是各题目的信息及原始识别结果，请给出完整的纠正后的答案。\n"
         + "\n".join(q_descriptions) +
         "\n\n请输出一个JSON对象，键为题号（字符串），值为完整的学生答案字符串（换行符用\\n表示）。"
@@ -318,7 +323,7 @@ def refine_subjective_answers(
     body = {
         "model": MM_MODEL_CONFIG["model"],
         "input": {"messages": [{"role": "user", "content": content}]},
-        "parameters": {"result_format": "message", "temperature": 0.0}
+        "parameters": {"result_format": "message", "temperature": 0.1}  # 略微提高温度，鼓励更全面的输出
     }
     headers = {
         "Authorization": f"Bearer {MM_MODEL_CONFIG['api_key']}",
@@ -420,15 +425,17 @@ def score_only(question: dict, student_answer: str) -> float:
 **评分标准**：
 {question.get('scoring_rules', '根据答案的正确性、完整性和逻辑清晰度给分')}
 
+
 **学生答案**：
 {student_answer}
 
 **评分要求**：
-1. 重点评判学生答案是否**正确回答了题目所问**，逻辑是否合理，关键步骤或要点是否齐全。
-2. 参考答案仅用于帮助你理解题意，**不要求学生的表述与参考答案完全一致**。只要学生的解答思路正确、结果合理，即使表达方式不同、使用了其他例子或不同的代码实现，也应给予高分或满分。
-3. 对于编程类题目，重点关注：算法思路是否正确、核心代码逻辑是否合理、是否考虑了边界条件等，只要满足题目要求即可得高分，不强制与参考答案代码完全相同。
-4. 若答案完全错误或文不对题，请给出低分（0-20分）；若部分正确但有遗漏或小错误，请酌情给分（50-80分）；若基本正确且完整，请给高分（80-100分）。
-5. 请只返回一个0-100之间的数字分数，不要输出任何其他文字、解释或标点。"""
+1. 首先判断学生答案是否回答了题目所问：只要有相关尝试，即使表述不完善，也应给予基础分（至少30分）。
+2. 若学生答案展现出清晰思路、合理步骤或部分正确结果，根据正确程度给分（70-90分）。
+3. 完全正确且逻辑完整清晰的答案给满分（100分）。
+4. 只有完全不相关、恶意作答或完全空白才给0分；学生若写了代码即使有问题也酌情给分（不低于40分）。
+5. 参考答案仅为参考，不要求一致；鼓励创新解法，只要满足题目要求即可。
+6. 请只返回一个0-100之间的数字分数，不要输出任何其他文字、解释或标点。"""
 
     body = {
         "model": MM_MODEL_CONFIG["model"],
@@ -711,11 +718,11 @@ async def process_grading(exam_id: int, job_id: int):
 
             students_result = conn.execute(
                 text("""
-                SELECT s.student_id, s.name
-                FROM students s
-                INNER JOIN exam_students es ON s.student_id = es.student_id
-                WHERE es.exam_id = :exam_id
-                """),
+                     SELECT s.student_id, s.name
+                     FROM students s
+                              INNER JOIN exam_students es ON s.student_id = es.student_id
+                     WHERE es.exam_id = :exam_id
+                     """),
                 {"exam_id": exam_id}
             )
             students = [dict(row._mapping) for row in students_result.fetchall()]
@@ -729,10 +736,16 @@ async def process_grading(exam_id: int, job_id: int):
 
             questions_result = conn.execute(
                 text("""
-                     SELECT q.id, q.type, q.content, q.reference_answer, q.scoring_rules,
-                            q.score as max_score, eq.question_order, q.parent_id
+                     SELECT q.id,
+                            q.type,
+                            q.content,
+                            q.reference_answer,
+                            q.scoring_rules,
+                            q.score as max_score,
+                            eq.question_order,
+                            q.parent_id
                      FROM questions q
-                     INNER JOIN exam_questions eq ON q.id = eq.question_id
+                              INNER JOIN exam_questions eq ON q.id = eq.question_id
                      WHERE eq.exam_id = :exam_id
                      ORDER BY eq.question_order
                      """),
@@ -757,11 +770,12 @@ async def process_grading(exam_id: int, job_id: int):
             with engine.connect() as conn:
                 images = conn.execute(
                     text("""
-                    SELECT COALESCE(processed_file_path, file_path) as file_path
-                    FROM answer_sheets
-                    WHERE exam_id = :exam_id AND student_id = :student_id
-                    ORDER BY page_order
-                    """),
+                         SELECT COALESCE(processed_file_path, file_path) as file_path
+                         FROM answer_sheets
+                         WHERE exam_id = :exam_id
+                           AND student_id = :student_id
+                         ORDER BY page_order
+                         """),
                     {"exam_id": exam_id, "student_id": student_id}
                 ).fetchall()
 
@@ -791,11 +805,12 @@ async def process_grading(exam_id: int, job_id: int):
                 with engine.connect() as conn:
                     fallback_images = conn.execute(
                         text("""
-                        SELECT file_path
-                        FROM answer_sheets
-                        WHERE exam_id = :exam_id AND student_id = :student_id
-                        ORDER BY page_order
-                        """),
+                             SELECT file_path
+                             FROM answer_sheets
+                             WHERE exam_id = :exam_id
+                               AND student_id = :student_id
+                             ORDER BY page_order
+                             """),
                         {"exam_id": exam_id, "student_id": student_id}
                     ).fetchall()
                 fallback_paths = [row.file_path for row in fallback_images]
@@ -813,7 +828,7 @@ async def process_grading(exam_id: int, job_id: int):
                     ocr_result[order]["answer"] = new_ans
                     logger.info(f"拆分选择题 {order}: 新答案 = {new_ans}")
 
-            # 拆分填空题答案（仅去除题号前缀，不重排）
+            # 拆分填空题答案（根据手写题号归位，仅去除题号前缀，不重排）
             split_fill_answers = split_combined_fillblanks(questions, {order: info["answer"] for order, info in
                                                                        ocr_result.items()})
             for order, new_ans in split_fill_answers.items():
@@ -859,7 +874,8 @@ async def process_grading(exam_id: int, job_id: int):
             if invalid_choices:
                 logger.info(f"发现 {len(invalid_choices)} 道选择题答案异常，调用纠错模型...")
                 corrected_answers = correct_answers_with_image(image_paths,
-                                                               {order: info["answer"] for order, info in ocr_result.items()},
+                                                               {order: info["answer"] for order, info in
+                                                                ocr_result.items()},
                                                                questions)
                 for order, new_ans in corrected_answers.items():
                     if order in invalid_choices and new_ans and re.fullmatch(r'[A-Za-z]', new_ans):
@@ -873,20 +889,30 @@ async def process_grading(exam_id: int, job_id: int):
                 logger.info(f"发现 {len(need_fix_choices)} 道选择题可能与参考答案不符，调用二次识别...")
                 partial_questions = [q for q in questions if q['question_order'] in need_fix_choices]
                 corrected_answers = correct_answers_with_image(image_paths,
-                                                               {order: info["answer"] for order, info in ocr_result.items()},
+                                                               {order: info["answer"] for order, info in
+                                                                ocr_result.items()},
                                                                partial_questions)
                 for order in need_fix_choices:
                     new_ans = corrected_answers.get(order, "")
-                    if new_ans and re.fullmatch(r'[A-Za-z]', new_ans) and new_ans.upper() != ocr_result[order]["answer"]:
-                        logger.info(f"二次识别覆盖选择题 {order}: '{ocr_result[order]['answer']}' -> '{new_ans.upper()}'")
+                    if new_ans and re.fullmatch(r'[A-Za-z]', new_ans) and new_ans.upper() != ocr_result[order][
+                        "answer"]:
+                        logger.info(
+                            f"二次识别覆盖选择题 {order}: '{ocr_result[order]['answer']}' -> '{new_ans.upper()}'")
                         ocr_result[order]["answer"] = new_ans.upper()
 
             # ---------- 主观题完整性补充（针对简答题小题号优化） ----------
-            subjective_orders = [q['question_order'] for q in questions
-                                 if q.get('type') not in ('choice', '选择题', 'fill_blank', '填空题', 'true_false', '判断题')]
+            # 使用正向匹配，确保所有主观题类型都覆盖
+            subjective_types = ('essay', 'calculation', '简答题', '计算题', '论述题', '主观题', 'subjective')
+            subjective_orders = [q['question_order'] for q in questions if q.get('type') in subjective_types]
+            if not subjective_orders:  # 如果正向没匹配到，再尝试反向排除（兜底）
+                subjective_orders = [q['question_order'] for q in questions
+                                     if q.get('type') not in ('choice', '选择题', 'fill_blank', '填空题', 'true_false',
+                                                              '判断题')]
             if subjective_orders:
                 subjective_questions = [q for q in questions if q['question_order'] in subjective_orders]
                 current_answers = {order: ocr_result.get(order, {}).get("answer", "") for order in subjective_orders}
+
+                # 第一次补充提取
                 refined_answers = refine_subjective_answers(
                     image_paths,
                     current_answers,
@@ -897,9 +923,28 @@ async def process_grading(exam_id: int, job_id: int):
                     if new_ans != current_answers.get(order, ""):
                         logger.info(f"主观题补充 {order}: 原'{current_answers[order][:50]}...' 更新为更完整版本")
                         ocr_result[order]["answer"] = new_ans
+                        current_answers[order] = new_ans
+
+                # 二次检查：对于答案长度仍然小于20字符的简答题，再次调用细化
+                short_orders = [order for order in subjective_orders
+                                if len(current_answers.get(order, '')) < 20]
+                if short_orders:
+                    logger.info(f"有 {len(short_orders)} 道主观题答案过短，进行强化二次提取...")
+                    short_questions = [q for q in questions if q['question_order'] in short_orders]
+                    second_refine = refine_subjective_answers(
+                        image_paths,
+                        {order: current_answers[order] for order in short_orders},
+                        short_questions
+                    )
+                    for order in short_orders:
+                        new_ans = second_refine.get(order, "")
+                        if new_ans != current_answers.get(order, ""):
+                            logger.info(
+                                f"主观题二次强化 {order}: 答案长度从 {len(current_answers[order])} 增加到 {len(new_ans)}")
+                            ocr_result[order]["answer"] = new_ans
+
                 logger.info(f"主观题完整性补充完成，共处理 {len(subjective_orders)} 道题")
             # -------------------------------------------------------------
-
 
             # ---------- 全局填空题答案清洗（兜底） ----------
             for q in questions:
@@ -969,7 +1014,8 @@ async def process_grading(exam_id: int, job_id: int):
                     conn.commit()
 
             if exam_total_score is not None and total_score > exam_total_score:
-                logger.warning(f"学生 {student_id} ({student['name']}) 总分 {total_score} 超过考试总分 {exam_total_score}")
+                logger.warning(
+                    f"学生 {student_id} ({student['name']}) 总分 {total_score} 超过考试总分 {exam_total_score}")
 
             processed += 1
             with engine.connect() as conn:

@@ -316,11 +316,7 @@ def preprocess_answer_sheet(image_path: str,
                             layout: Optional[List[dict]] = None,
                             questions_per_section: Optional[List[int]] = None,
                             section_types: Optional[List[str]] = None) -> Optional[np.ndarray]:
-    """
-    完整预处理：自动旋转纠正 → 倾斜校正 → 增强 → 划痕遮盖 → 区域划分/绘制。
-    返回处理后的彩色图像。
-    """
-    img = cv2.imread(image_path)
+    img = correct_exif_orientation(image_path)
     if img is None:
         logger.error(f"无法读取图片: {image_path}")
         return None
@@ -827,3 +823,35 @@ def transfer_image(
     except Exception as e:
         logger.error(f"移动图片失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"移动图片失败: {str(e)}")
+
+@router.delete("/api/exams/{exam_id}/students/{student_id}/images")
+def delete_student_images(exam_id: int, student_id: int):
+    """删除某个学生在某次考试中的所有答题卡图片"""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT file_path, processed_file_path FROM answer_sheets WHERE exam_id = :exam_id AND student_id = :student_id"),
+                {"exam_id": exam_id, "student_id": student_id}
+            ).fetchall()
+
+            if not rows:
+                raise HTTPException(status_code=404, detail="该学生没有上传任何图片")
+
+            for row in rows:
+                if os.path.exists(row.file_path):
+                    os.remove(row.file_path)
+                if row.processed_file_path and row.processed_file_path != row.file_path and os.path.exists(row.processed_file_path):
+                    os.remove(row.processed_file_path)
+
+            conn.execute(
+                text("DELETE FROM answer_sheets WHERE exam_id = :exam_id AND student_id = :student_id"),
+                {"exam_id": exam_id, "student_id": student_id}
+            )
+            conn.commit()
+
+        return {"code": 1, "msg": "已删除该学生的所有图片"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量删除学生图片失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="批量删除失败")

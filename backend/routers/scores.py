@@ -150,6 +150,9 @@ def get_exam_scores(exam_id: int):
                 if s["total_score"] is None:
                     s["rank"] = None
 
+            # 按总分降序排列（未评分的学生放在最后）
+            student_data_list.sort(key=lambda x: (x["total_score"] is None, -(x["total_score"] or 0)))
+
             return {
                 "code": 1,
                 "msg": "获取成功",

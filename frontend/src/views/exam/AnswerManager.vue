@@ -15,9 +15,8 @@
       </el-radio-group>
     </div>
 
-    <!-- 学生表格（每个学生一行，展示其多张图片） -->
+    <!-- 学生表格 -->
     <el-table :data="studentList" style="width: 100%" row-key="student_id">
-      <!-- 新增序号列 -->
       <el-table-column type="index" label="序号" width="60" />
       <el-table-column prop="student_number" label="学号" width="120" />
       <el-table-column prop="name" label="姓名" width="100" />
@@ -30,11 +29,12 @@
               :key="img.id"
               class="image-item"
             >
+              <!-- 不再使用 el-image 内置预览，改为手动触发 -->
               <el-image
                 :src="getImageUrl(img)"
-                fit="cover"
+                fit="contain"
                 class="image-thumb"
-                :preview-src-list="[getImageUrl(img)]"
+                @click="openPreview(getImageUrl(img))"
               />
               <div class="image-actions">
                 <el-input-number
@@ -53,7 +53,6 @@
               </div>
               <div class="image-filename">{{ img.filename }}</div>
             </div>
-            <!-- 为该学生添加图片的按钮 -->
             <el-upload
               :auto-upload="false"
               :show-file-list="false"
@@ -66,10 +65,19 @@
           </div>
         </template>
       </el-table-column>
+      <el-table-column label="操作" width="100" align="center">
+        <template #default="{ row }">
+          <el-button
+            type="danger"
+            size="small"
+            @click="deleteAllImages(row.student_id, row.name)"
+          >删除全部</el-button>
+        </template>
+      </el-table-column>
     </el-table>
 
-    <!-- 上传对话框（批量上传到指定学生） -->
-        <el-dialog v-model="showUploadDialog" title="上传答题卡图片" width="600px">
+    <!-- 上传对话框 -->
+    <el-dialog v-model="showUploadDialog" title="上传答题卡图片" width="600px">
       <el-form label-width="100px">
         <el-form-item label="匹配模式">
           <el-radio-group v-model="autoMatchMode" @change="onModeChange">
@@ -108,63 +116,70 @@
           </el-upload>
         </el-form-item>
       </el-form>
-
       <template #footer>
         <el-button @click="showUploadDialog = false">取消</el-button>
         <el-button type="primary" @click="uploadImages">确认上传</el-button>
       </template>
     </el-dialog>
+
+    <!-- 自定义全屏图片预览（Teleport 到 body，避免被任何页面元素遮挡） -->
+    <Teleport to="body">
+      <div
+        v-if="previewVisible"
+        class="preview-overlay"
+        @click.self="closePreview"
+      >
+        <div class="preview-content">
+          <img :src="previewImg" class="preview-img" />
+          <el-icon class="preview-close" @click="closePreview">
+            <Close />
+          </el-icon>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Close } from '@element-plus/icons-vue'
 import axios from 'axios'
 
 const props = defineProps({
-  examId: {
-    type: [String, Number],
-    required: true
-  },
-  students: {
-    type: Array,
-    default: () => []
-  },
-  imagesPerStudent: {
-    type: Number,
-    default: 4
-  }
+  examId: { type: [String, Number], required: true },
+  students: { type: Array, default: () => [] },
+  imagesPerStudent: { type: Number, default: 4 }
 })
 
-// 学生列表（每个学生包含其图片数组）
 const studentList = ref([])
-
-// 上传对话框相关
 const showUploadDialog = ref(false)
 const uploadStudentId = ref(null)
 const uploadFileList = ref([])
-
-// 上传文件夹状态
 const folderUploading = ref(false)
+const uploadingSingle = ref(false)
+const autoMatchMode = ref(false)
 
-const uploadingSingle = ref(false)   // 手动上传状态
+// 自定义预览状态
+const previewVisible = ref(false)
+const previewImg = ref('')
 
-// 新增自动匹配模式标志
-const autoMatchMode = ref(false)   // 默认顺序对应
+const onModeChange = () => { uploadStudentId.value = null }
 
-// 模式切换时清空学生选择
-const onModeChange = () => {
-  uploadStudentId.value = null
-}
-
-// 获取图片URL（优先使用预处理后的图片）
 const getImageUrl = (img) => {
   const filePath = img.processed_file_path || img.file_path
   let relative = filePath
   if (relative.startsWith('./')) relative = relative.slice(2)
   if (relative.startsWith('uploads/')) relative = relative.slice(8)
   return `http://localhost:8001/uploads/${relative}`
+}
+
+const openPreview = (url) => {
+  previewImg.value = url
+  previewVisible.value = true
+}
+const closePreview = () => {
+  previewVisible.value = false
 }
 
 // 获取考试所有学生的图片并组装数据（带去重）
@@ -187,15 +202,12 @@ const fetchStudentImages = async () => {
     const imgMap = new Map()
     for (const img of images) {
       const sid = img.student.student_id
-      if (!imgMap.has(sid)) {
-        imgMap.set(sid, [])
-      }
+      if (!imgMap.has(sid)) imgMap.set(sid, [])
       imgMap.get(sid).push(img)
     }
 
     const list = students.map(student => {
       const studentImages = imgMap.get(student.student_id) || []
-      // 按 id 去重，然后按 page_order 排序
       const uniqueImages = []
       const seenIds = new Set()
       for (const img of studentImages) {
@@ -205,10 +217,7 @@ const fetchStudentImages = async () => {
         }
       }
       uniqueImages.sort((a, b) => a.page_order - b.page_order)
-      return {
-        ...student,
-        images: uniqueImages
-      }
+      return { ...student, images: uniqueImages }
     })
     studentList.value = list
   } catch (error) {
@@ -217,7 +226,6 @@ const fetchStudentImages = async () => {
   }
 }
 
-// 打开上传对话框
 const openUploadDialog = () => {
   if (!studentList.value.length) {
     ElMessage.warning('请先导入学生名单')
@@ -228,7 +236,6 @@ const openUploadDialog = () => {
   showUploadDialog.value = true
 }
 
-// 上传图片（单学生多张）
 const uploadImages = async () => {
   if (uploadFileList.value.length === 0) {
     ElMessage.error('请选择图片文件')
@@ -250,7 +257,7 @@ const uploadImages = async () => {
     formData.append('student_ids', uploadStudentId.value)
   }
 
-  uploadingSingle.value = true   // 显示加载遮罩
+  uploadingSingle.value = true
   try {
     const response = await axios.post(
       `http://localhost:8001/api/exams/${props.examId}/images`,
@@ -269,11 +276,10 @@ const uploadImages = async () => {
     console.error('上传失败:', error)
     ElMessage.error('上传失败')
   } finally {
-    uploadingSingle.value = false   // 隐藏加载遮罩
+    uploadingSingle.value = false
   }
 }
 
-// 删除图片
 const deleteImage = async (imageId) => {
   try {
     await ElMessageBox.confirm('确定删除该图片吗？', '提示', { type: 'warning' })
@@ -292,7 +298,28 @@ const deleteImage = async (imageId) => {
   }
 }
 
-// 更新图片顺序
+const deleteAllImages = async (studentId, studentName) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除 ${studentName} 的所有答题卡图片吗？此操作不可恢复。`,
+      '警告',
+      { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning' }
+    )
+    const response = await axios.delete(`http://localhost:8001/api/exams/${props.examId}/students/${studentId}/images`)
+    if (response.data.code === 1) {
+      ElMessage.success(`已删除 ${studentName} 的所有图片`)
+      await fetchStudentImages()
+    } else {
+      ElMessage.error(response.data.msg || '删除失败')
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      console.error('批量删除失败:', error)
+      ElMessage.error('批量删除失败')
+    }
+  }
+}
+
 const updateImageOrder = async (img) => {
   const formData = new FormData()
   formData.append('page_order', img.page_order)
@@ -316,7 +343,6 @@ const updateImageOrder = async (img) => {
   }
 }
 
-// 为某个学生单独添加图片
 const handleAddFile = async (file, studentId) => {
   const formData = new FormData()
   formData.append('files', file.raw)
@@ -339,19 +365,16 @@ const handleAddFile = async (file, studentId) => {
   }
 }
 
-// 获取学生列表（内部用）
 const fetchStudentList = async () => {
   try {
     const res = await axios.get(`/api/exams/${props.examId}/students`)
-    if (res.data.code === 1) {
-      // 仅用于学生列表备胎，一般不直接使用
-    }
+    if (res.data.code === 1) { /* 仅用于学生列表备胎 */ }
   } catch (error) {
     console.error('获取学生列表失败', error)
   }
 }
 
-// 处理文件夹导入（使用 imagesPerStudent）
+// 处理文件夹导入（保持不变，已在原文件中）
 const handleImportFolder = async () => {
   const students = (props.students && props.students.length) ? props.students : studentList.value
   if (!students || students.length === 0) {
@@ -385,16 +408,12 @@ const handleImportFolder = async () => {
       return
     }
 
-    // 生成组（每组包含属于同一学生的图片）
     const groups = []
     for (let i = 0; i < totalStudents; i++) {
       const student = students[i]
       const startIdx = i * imagesPerStudent
       const studentImages = imageFiles.slice(startIdx, startIdx + imagesPerStudent)
-      groups.push({
-        studentId: student.student_id,   // 顺序模式下需要
-        files: studentImages
-      })
+      groups.push({ studentId: student.student_id, files: studentImages })
     }
 
     try {
@@ -416,12 +435,9 @@ const handleImportFolder = async () => {
       for (const file of group.files) {
         formData.append('files', file)
       }
-      // 根据全局模式决定参数
       if (autoMatchMode.value) {
-        // 姓名匹配模式
         formData.append('auto_match', true)
       } else {
-        // 顺序模式
         formData.append('student_ids', group.studentId)
       }
 
@@ -458,19 +474,10 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.tab-actions {
-  margin-bottom: 20px;
-  display: flex;
-  gap: 12px;
-}
-.images-container {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: flex-start;
-}
+.tab-actions { margin-bottom: 20px; display: flex; gap: 12px; }
+.images-container { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
 .image-item {
-  width: 160px;
+  width: 360px;
   border: 1px solid #e4e7ed;
   border-radius: 8px;
   padding: 8px;
@@ -478,23 +485,50 @@ onMounted(() => {
 }
 .image-thumb {
   width: 100%;
-  height: 100px;
-  object-fit: cover;
+  height: auto;
+  max-height: 400px;
+  object-fit: contain;
   border-radius: 4px;
   cursor: pointer;
 }
-.image-actions {
+.image-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+.image-filename { font-size: 12px; color: #909399; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+
+<style>
+/* 自定义全屏预览遮罩 */
+.preview-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.9);
+  z-index: 100000;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-top: 8px;
+  justify-content: center;
 }
-.image-filename {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.preview-content {
+  position: relative;
+  max-width: 95vw;
+  max-height: 95vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.preview-img {
+  max-width: 90vw;   /* 之前是 100%，改为视口宽度的 80% */
+  max-height: 90vh;  /* 之前是 100%，改为视口高度的 80% */
+  object-fit: contain;
+}
+.preview-close {
+  position: absolute;
+  top: -40px;
+  right: -40px;
+  font-size: 32px;
+  color: #fff;
+  cursor: pointer;
+  z-index: 100001;
 }
 </style>

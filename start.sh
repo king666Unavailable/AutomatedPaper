@@ -23,17 +23,23 @@ else
     echo "MySQL 服务已在运行。"
 fi
 
-# 1. 检查后端虚拟环境
+# 1. 检查后端虚拟环境并安装依赖（无论是否存在，都安装/更新）
 if [ ! -d "backend/venv" ]; then
     echo "后端虚拟环境不存在，正在创建..."
     cd backend
     python3 -m venv venv
     source venv/bin/activate
+    pip install --upgrade pip
     pip install -r requirements.txt
     cd ..
     echo "后端环境创建完成。"
 else
-    echo "后端虚拟环境已存在。"
+    echo "后端虚拟环境已存在，正在更新依赖..."
+    cd backend
+    source venv/bin/activate
+    pip install --upgrade pip
+    pip install -r requirements.txt
+    cd ..
 fi
 
 # 2. 检查前端依赖
@@ -50,8 +56,9 @@ fi
 # 3. 启动后端服务
 echo "正在启动后端服务 (FastAPI) ..."
 cd backend
-# 直接使用虚拟环境中的 uvicorn，避免激活子 shell 问题
-nohup ./venv/bin/uvicorn app_main:app --host 0.0.0.0 --port 8001 > ../backend.log 2>&1 &
+# 激活虚拟环境并使用 python -m uvicorn 启动（确保依赖正确）
+source venv/bin/activate
+nohup python -m uvicorn app_main:app --host 0.0.0.0 --port 8001 > ../backend.log 2>&1 &
 BACKEND_PID=$!
 cd ..
 echo "后端服务已启动，PID: $BACKEND_PID，日志: backend.log"

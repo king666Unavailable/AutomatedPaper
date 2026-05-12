@@ -5,6 +5,8 @@
         <div class="header-actions">
           <span>成绩列表</span>
           <div>
+            <el-button type="primary" @click="exportObjectiveAnswers">导出客观题答案</el-button>
+            <el-button type="warning" @click="exportSubjectiveAnswers">导出主观题答案</el-button>
             <el-button type="primary" @click="exportExcel">导出Excel</el-button>
             <el-button @click="refreshScores">刷新</el-button>
           </div>
@@ -49,6 +51,7 @@ const props = defineProps({
 
 const loading = ref(false)
 const studentList = ref([])
+const examName = ref('')
 
 const formatDate = (dateStr) => {
   if (!dateStr) return ''
@@ -61,6 +64,7 @@ const fetchScores = async () => {
     const res = await axios.get(`/api/exams/${props.examId}/scores`)
     if (res.data.code === 1) {
       const data = res.data.data
+      examName.value = data.exam_info?.exam_name || ''
       studentList.value = data.students.map(s => ({
         ...s,
         grading_status: s.total_score !== null ? 'completed' : 'pending',
@@ -81,15 +85,55 @@ const refreshScores = () => {
   fetchScores()
 }
 
-const exportExcel = async () => {
+// 导出客观题答案
+const exportObjectiveAnswers = async () => {
   try {
-    const response = await axios.get(`/api/exams/${props.examId}/export`, {
-      responseType: 'blob'
-    })
+    const response = await axios.get(`/api/exams/${props.examId}/export-objective`, { responseType: 'blob' })
     const url = window.URL.createObjectURL(new Blob([response.data]))
     const link = document.createElement('a')
+    const name = examName.value || '考试'
     link.href = url
-    link.setAttribute('download', `exam_${props.examId}_scores.xlsx`)
+    link.setAttribute('download', `exam_${name}_${props.examId}_objective_answers.xlsx`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch (error) {
+    console.error('导出失败:', error)
+    ElMessage.error('导出失败')
+  }
+}
+
+// 导出主观题答案
+const exportSubjectiveAnswers = async () => {
+  try {
+    const response = await axios.get(`/api/exams/${props.examId}/export-subjective`, { responseType: 'blob' })
+    const url = window.URL.createObjectURL(new Blob([response.data]))
+    const link = document.createElement('a')
+    const name = examName.value || '考试'
+    link.href = url
+    link.setAttribute('download', `exam_${name}_${props.examId}_subjective_answers.xlsx`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('导出成功')
+  } catch (error) {
+    console.error('导出失败:', error)
+    ElMessage.error('导出失败')
+  }
+}
+
+// 导出总成绩Excel
+const exportExcel = async () => {
+  try {
+    const response = await axios.get(`/api/exams/${props.examId}/export`, { responseType: 'blob' })
+    const url = window.URL.createObjectURL(new Blob([response.data]))
+    const link = document.createElement('a')
+    const name = examName.value || '考试'
+    link.href = url
+    link.setAttribute('download', `exam_${name}_${props.examId}_scores.xlsx`)
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)

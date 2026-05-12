@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Body
 from typing import List, Optional
 import logging
 import os
@@ -855,3 +855,123 @@ def delete_student_images(exam_id: int, student_id: int):
     except Exception as e:
         logger.error(f"批量删除学生图片失败: {str(e)}")
         raise HTTPException(status_code=500, detail="批量删除失败")
+
+@router.post("/api/exams/{exam_id}/images/{image_id}/mask")
+def mask_image_rects(exam_id: int, image_id: int, rects: List[dict] = Body(..., embed=True)):
+    """
+    基于预处理后的图片进行矩形遮盖，并更新 processed_file_path。
+    若没有预处理图，则使用原图。
+    """
+    try:
+        with engine.connect() as conn:
+            img = conn.execute(
+                text("SELECT file_path, processed_file_path FROM answer_sheets WHERE id = :image_id AND exam_id = :exam_id"),
+                {"image_id": image_id, "exam_id": exam_id}
+            ).fetchone()
+            if not img:
+                raise HTTPException(status_code=404, detail="图片不存在")
+
+        # 优先使用预处理图，没有则用原图
+        source_path = img.processed_file_path if img.processed_file_path else img.file_path
+        source_img = cv2.imread(source_path)
+        if source_img is None:
+            raise HTTPException(status_code=500, detail="无法读取图片")
+
+        # 绘制白色矩形
+        for rect in rects:
+            x, y, w, h = int(rect["x"]), int(rect["y"]), int(rect["w"]), int(rect["h"])
+            cv2.rectangle(source_img, (x, y), (x + w, y + h), (255, 255, 255), -1)
+
+        # 保存结果（直接覆盖原预处理路径，若原本没有预处理图则新建）
+        base, ext = os.path.splitext(img.file_path) if img.file_path else os.path.splitext(img.processed_file_path)
+        processed_path = img.processed_file_path if img.processed_file_path else f"{base}_processed.png"
+        cv2.imwrite(processed_path, source_img)
+
+        # 更新数据库（确保 processed_file_path 指向该文件）
+        with engine.connect() as conn:
+            conn.execute(
+                text("UPDATE answer_sheets SET processed_file_path = :path WHERE id = :image_id"),
+                {"path": processed_path, "image_id": image_id}
+            )
+            conn.commit()
+
+        return {"code": 1, "msg": "遮盖成功"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"遮盖图片失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="遮盖处理失败")
+
+@router.post("/api/exams/{exam_id}/images/{image_id}/reset-mask")
+def reset_image_mask(exam_id: int, image_id: int):
+    """将处理图重置为未遮盖的预处理图（重新预处理原图）"""
+    try:
+        with engine.connect() as conn:
+            img = conn.execute(
+                text("SELECT file_path FROM answer_sheets WHERE id = :image_id AND exam_id = :exam_id"),
+                {"image_id": image_id, "exam_id": exam_id}
+            ).fetchone()
+            if not img:
+                raise HTTPException(status_code=404, detail="图片不存在")
+            file_path = img.file_path
+
+        # 获取题目分布（用于预处理分割线）
+        with engine.connect() as conn:
+            q_rows = conn.execute(
+                text("""
+                    SELECT eq.question_order, q.type
+                    FROM exam_questions eq
+                    JOIN questions q ON eq.question_id = q.id
+                    WHERE eq.exam_id = :exam_id
+                    ORDER BY eq.question_order
+                """),
+                {"exam_id": exam_id}
+            ).fetchall()
+            current_type = None
+            questions_per_section = []
+            section_types = []
+            for row in q_rows:
+                if row.type != current_type:
+                    questions_per_section.append(0)
+                    section_types.append(row.type)
+                    current_type = row.type
+                questions_per_section[-1] += 1
+
+        # 获取布局（若存在）
+        with engine.connect() as conn:
+            layout_str = conn.execute(
+                text("SELECT answer_sheet_layout FROM exams WHERE exam_id = :exam_id"),
+                {"exam_id": exam_id}
+            ).scalar()
+        layout = None
+        if layout_str:
+            try:
+                layout = json.loads(layout_str)
+                if not isinstance(layout, list):
+                    layout = None
+            except:
+                pass
+
+        # 重新预处理
+        processed_img = preprocess_answer_sheet(file_path, layout, questions_per_section, section_types)
+        if processed_img is None:
+            raise HTTPException(status_code=500, detail="预处理失败")
+
+        base, ext = os.path.splitext(file_path)
+        processed_path = f"{base}_processed.png"
+        cv2.imwrite(processed_path, processed_img)
+
+        # 更新数据库
+        with engine.connect() as conn:
+            conn.execute(
+                text("UPDATE answer_sheets SET processed_file_path = :path WHERE id = :image_id"),
+                {"path": processed_path, "image_id": image_id}
+            )
+            conn.commit()
+
+        return {"code": 1, "msg": "已重置为原始预处理图"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"重置遮盖失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="重置失败")

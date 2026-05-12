@@ -1043,6 +1043,224 @@ async def process_grading(exam_id: int, job_id: int):
             conn.commit()
 
 
+async def process_single_student_grading(exam_id: int, student_id: int, job_id: int):
+    logger.info(f"开始单个学生阅卷：exam_id={exam_id}, student_id={student_id}, job_id={job_id}")
+    try:
+        with engine.connect() as conn:
+            exam = conn.execute(
+                text("SELECT exam_id, total_score FROM exams WHERE exam_id = :exam_id"),
+                {"exam_id": exam_id}
+            ).fetchone()
+            if not exam:
+                raise Exception(f"考试 {exam_id} 不存在")
+            exam_total_score = exam.total_score
+
+            # 获取题目列表
+            questions_result = conn.execute(
+                text("""
+                     SELECT q.id, q.type, q.content, q.reference_answer, q.scoring_rules,
+                            q.score as max_score, eq.question_order, q.parent_id
+                     FROM questions q
+                     INNER JOIN exam_questions eq ON q.id = eq.question_id
+                     WHERE eq.exam_id = :exam_id
+                     ORDER BY eq.question_order
+                     """),
+                {"exam_id": exam_id}
+            )
+            questions = [dict(row._mapping) for row in questions_result.fetchall()]
+            if not questions:
+                raise Exception(f"考试 {exam_id} 没有题目")
+
+        # 获取该学生的图片路径
+        with engine.connect() as conn:
+            images = conn.execute(
+                text("""
+                     SELECT COALESCE(processed_file_path, file_path) as file_path
+                     FROM answer_sheets
+                     WHERE exam_id = :exam_id AND student_id = :student_id
+                     ORDER BY page_order
+                     """),
+                {"exam_id": exam_id, "student_id": student_id}
+            ).fetchall()
+
+            if not images:
+                raise Exception(f"学生 {student_id} 没有答题卡图片")
+
+        image_paths = [row.file_path for row in images]
+
+        # OCR 识别
+        ocr_result = ocr_only(image_paths, questions)
+        if ocr_result is None:
+            ocr_result = {}
+
+        original_answers = {order: info["answer"] for order, info in ocr_result.items()}
+
+        # 拆分选择题答案
+        split_answers = split_combined_choices(questions,
+                                               {order: info["answer"] for order, info in ocr_result.items()})
+        for order, new_ans in split_answers.items():
+            if new_ans:
+                ocr_result[order]["answer"] = new_ans
+
+        # 拆分填空题答案（根据手写题号归位）
+        split_fill_answers = split_combined_fillblanks(questions,
+                                                       {order: info["answer"] for order, info in ocr_result.items()})
+        for order, new_ans in split_fill_answers.items():
+            if new_ans != ocr_result[order]["answer"]:
+                ocr_result[order]["answer"] = new_ans
+
+        # 填空题答案匹配到参考答案位置
+        ocr_result = match_fillblanks_to_reference(questions,
+                                                   {order: info["answer"] for order, info in ocr_result.items()})
+        # 统一数据结构
+        for order in ocr_result:
+            if isinstance(ocr_result[order], str):
+                ocr_result[order] = {"exists": True, "answer": ocr_result[order]}
+
+        # 选择题答案格式验证与二次纠错
+        choice_orders = [q['question_order'] for q in questions if q.get('type') in ('choice', '选择题')]
+        invalid_choices = []
+        need_fix_choices = []
+        for order in choice_orders:
+            ans = ocr_result.get(order, {}).get("answer", "")
+            if not ans:
+                continue
+            if not re.fullmatch(r'[A-Za-z]+', ans):
+                invalid_choices.append(order)
+                continue
+            if len(ans) > 1 and ans.upper() not in ('AB', 'BC', 'CD', 'DE'):
+                invalid_choices.append(order)
+                continue
+            ref = ""
+            for q in questions:
+                if q['question_order'] == order:
+                    ref = q.get('reference_answer', '').strip()
+                    break
+            if ref and ans.upper() != ref.upper():
+                need_fix_choices.append(order)
+
+        if invalid_choices:
+            corrected_answers = correct_answers_with_image(image_paths,
+                                                           {order: info["answer"] for order, info in ocr_result.items()},
+                                                           questions)
+            for order, new_ans in corrected_answers.items():
+                if order in invalid_choices and new_ans and re.fullmatch(r'[A-Za-z]', new_ans):
+                    ocr_result[order]["answer"] = new_ans.upper()
+                elif order in invalid_choices:
+                    ocr_result[order]["answer"] = ""
+
+        if need_fix_choices:
+            partial_questions = [q for q in questions if q['question_order'] in need_fix_choices]
+            corrected_answers = correct_answers_with_image(image_paths,
+                                                           {order: info["answer"] for order, info in ocr_result.items()},
+                                                           partial_questions)
+            for order in need_fix_choices:
+                new_ans = corrected_answers.get(order, "")
+                if new_ans and re.fullmatch(r'[A-Za-z]', new_ans) and new_ans.upper() != ocr_result[order]["answer"]:
+                    ocr_result[order]["answer"] = new_ans.upper()
+
+        # 主观题完整性补充
+        subjective_types = ('essay', 'calculation', '简答题', '计算题', '论述题', '主观题', 'subjective')
+        subjective_orders = [q['question_order'] for q in questions if q.get('type') in subjective_types]
+        if not subjective_orders:
+            subjective_orders = [q['question_order'] for q in questions
+                                 if q.get('type') not in ('choice', '选择题', 'fill_blank', '填空题', 'true_false', '判断题')]
+        if subjective_orders:
+            subjective_questions = [q for q in questions if q['question_order'] in subjective_orders]
+            current_answers = {order: ocr_result.get(order, {}).get("answer", "") for order in subjective_orders}
+            refined_answers = refine_subjective_answers(image_paths, current_answers, subjective_questions)
+            for order in subjective_orders:
+                new_ans = refined_answers.get(order, "")
+                if new_ans != current_answers.get(order, ""):
+                    ocr_result[order]["answer"] = new_ans
+                    current_answers[order] = new_ans
+            # 二次检查短答案
+            short_orders = [order for order in subjective_orders if len(current_answers.get(order, '')) < 20]
+            if short_orders:
+                short_questions = [q for q in questions if q['question_order'] in short_orders]
+                second_refine = refine_subjective_answers(image_paths,
+                                                          {order: current_answers[order] for order in short_orders},
+                                                          short_questions)
+                for order in short_orders:
+                    new_ans = second_refine.get(order, "")
+                    if new_ans != current_answers.get(order, ""):
+                        ocr_result[order]["answer"] = new_ans
+
+        # 全局填空题答案清洗
+        for q in questions:
+            if q.get('type') in ['填空题', 'fill_blank']:
+                order = q['question_order']
+                ans = ocr_result.get(order, {}).get("answer", "")
+                if ans:
+                    cleaned = re.sub(
+                        r'^\s*(?:\(\s*\d+\s*\)|（\s*\d+\s*）|[①②③④⑤⑥⑦⑧⑨⑩]+|\d+[\.、:：）)\u00A0]\s*)+',
+                        '', ans
+                    ).strip()
+                    if cleaned and cleaned != ans:
+                        ocr_result[order]["answer"] = cleaned
+
+        # 手写题号智能清空
+        total_questions = len(questions)
+        for q in questions:
+            order = q['question_order']
+            ans = ocr_result.get(order, {}).get("answer", "")
+            if not ans:
+                continue
+            m = re.fullmatch(r'\s*(\d{1,3})\s*[\.、]\s*', ans)
+            if m:
+                num_val = int(m.group(1))
+                if 1 <= num_val <= total_questions:
+                    ocr_result[order]["answer"] = ""
+
+        # 评分并写入数据库
+        total_score = 0.0
+        with engine.connect() as conn:
+            for q in questions:
+                qid = q["id"]
+                order = q['question_order']
+                student_answer = ocr_result.get(order, {}).get("answer", "")
+                percent_score = score_only(q, student_answer)
+                max_score = float(q.get("max_score", 100))
+                actual_score = round((percent_score / 100.0) * max_score)
+                actual_score = min(actual_score, max_score)
+                total_score += actual_score
+
+                conn.execute(
+                    text("""
+                        INSERT INTO student_scores (exam_id, student_id, question_id, score, student_answer)
+                        VALUES (:exam_id, :student_id, :question_id, :score, :student_answer)
+                        ON DUPLICATE KEY UPDATE
+                        score = VALUES(score), student_answer = VALUES(student_answer), updated_at = CURRENT_TIMESTAMP
+                        """),
+                    {
+                        "exam_id": exam_id,
+                        "student_id": student_id,
+                        "question_id": qid,
+                        "score": actual_score,
+                        "student_answer": student_answer
+                    }
+                )
+                conn.commit()
+
+        # 更新 grading_job 为完成
+        with engine.connect() as conn:
+            conn.execute(
+                text("UPDATE grading_jobs SET status = 'completed', total_students = 1, processed_students = 1 WHERE id = :job_id"),
+                {"job_id": job_id}
+            )
+            conn.commit()
+
+        logger.info(f"单个学生阅卷完成：exam_id={exam_id}, student_id={student_id}")
+
+    except Exception as e:
+        logger.exception(f"单个学生阅卷失败：exam_id={exam_id}, student_id={student_id}")
+        with engine.connect() as conn:
+            conn.execute(
+                text("UPDATE grading_jobs SET status = 'failed' WHERE id = :job_id"),
+                {"job_id": job_id}
+            )
+            conn.commit()
+
 # ==================== API 端点 ====================
 @router.post("/api/exams/{exam_id}/grade")
 async def start_grading(exam_id: int):
@@ -1134,3 +1352,45 @@ def get_grading_progress(exam_id: int):
     except Exception as e:
         logger.error(f"获取阅卷进度失败: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/exams/{exam_id}/students/{student_id}/regrade")
+async def regrade_single_student(exam_id: int, student_id: int):
+    """单独对指定学生重新阅卷"""
+    try:
+        with engine.connect() as conn:
+            # 检查考试和学生是否存在
+            exam = conn.execute(
+                text("SELECT exam_id FROM exams WHERE exam_id = :exam_id"),
+                {"exam_id": exam_id}
+            ).fetchone()
+            if not exam:
+                raise HTTPException(status_code=404, detail=f"考试 {exam_id} 不存在")
+            student = conn.execute(
+                text("SELECT 1 FROM exam_students WHERE exam_id = :exam_id AND student_id = :student_id"),
+                {"exam_id": exam_id, "student_id": student_id}
+            ).fetchone()
+            if not student:
+                raise HTTPException(status_code=404, detail=f"学生 {student_id} 未参加该考试")
+
+            # 创建阅卷任务
+            result = conn.execute(
+                text("INSERT INTO grading_jobs (exam_id, status) VALUES (:exam_id, 'pending')"),
+                {"exam_id": exam_id}
+            )
+            conn.commit()
+            job_id = result.lastrowid
+
+        # 启动异步任务
+        asyncio.create_task(process_single_student_grading(exam_id, student_id, job_id))
+
+        return {
+            "code": 1,
+            "msg": "该学生的阅卷任务已启动",
+            "data": {"job_id": job_id, "exam_id": exam_id, "student_id": student_id, "status": "pending"}
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"启动单个学生阅卷失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="启动阅卷失败")

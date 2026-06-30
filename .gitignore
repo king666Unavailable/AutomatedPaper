@@ -1,6 +1,7 @@
 .claude
 .gemini
 .vscode
+.idea/
 node_modules
 backend/uploads/
 backend/venv/

@@ -3,6 +3,7 @@
 .vscode
 node_modules
 backend/uploads/
+backend/venv/
 __pycache__/
 *.pyc
 *.pyo

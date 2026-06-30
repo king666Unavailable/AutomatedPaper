@@ -1,11 +1,15 @@
 import os
+from dotenv import load_dotenv
+
+# 加载 .env 文件中的环境变量
+load_dotenv()
 
 # 数据库配置
 DATABASE_CONFIG = {
-    'host': 'localhost',
-    'user': 'root',
-    'password': 'Root@123456',  # 请根据实际情况修改，如果无密码则留空
-    'database': 'exam_platform'
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'user': os.getenv('DB_USER', 'root'),
+    'password': os.getenv('DB_PASSWORD', ''),
+    'database': os.getenv('DB_NAME', 'exam_platform')
 }
 
 
@@ -15,9 +19,12 @@ UPLOAD_DIR = "./uploads"
 # 多模态模型 API 配置
 MM_MODEL_CONFIG = {
     "provider": "qwen",
-    "api_key": "sk-27dbe63ba53a4bde8d7f2040bc52c004",  # 替换为你的 API Key
-    "api_url": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
-    "model": "qwen-vl-plus",        # 或 qwen-vl-max
-    "timeout": 30,
-    "max_retries": 2
+    "api_key": os.getenv('MM_API_KEY', ''),  # 在 .env 中配置
+    "api_url": os.getenv(
+        'MM_API_URL',
+        'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
+    ),
+    "model": os.getenv('MM_MODEL', 'qwen-vl-plus'),  # 或 qwen-vl-max
+    "timeout": int(os.getenv('MM_TIMEOUT', '30')),
+    "max_retries": int(os.getenv('MM_MAX_RETRIES', '2'))
 }

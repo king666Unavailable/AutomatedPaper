@@ -16,7 +16,7 @@
 AutomatedPaper/
 ├── backend/                # 后端代码目录
 │   ├── app_main.py         # 后端核心入口文件，集成所有路由
-│   ├── config.py           # 配置文件 (数据库配置等)
+│   ├── config.py           # 配置文件（从 .env 加载数据库和模型配置）
 │   ├── database.py         # 数据库连接初始化
 │   ├── requirements.txt    # Python依赖包列表
 │   └── routers/            # 路由模块 (按功能拆分)
@@ -148,17 +148,23 @@ AutomatedPaper/
    ```bash
    pip install -r requirements.txt
    ```
-4. **配置数据库连接**：
-   打开 `backend/config.py`，找到 `DATABASE_CONFIG` 变量，根据你的本地 MySQL 配置修改 `user` 和 `password`。
-   ```python
-   # backend/config.py
-   DATABASE_CONFIG = {
-       'host': 'localhost',
-       'user': 'root',
-       'password': 'your_password',  # <--- 修改这里
-       'database': 'exam_platform'
-   }
+4. **配置环境变量**：
+   项目根目录下已提供 `.env.example` 模板，复制为 `.env` 后填入你的本地配置：
+   ```bash
+   cp .env.example .env
    ```
+   然后编辑 `.env` 文件：
+   ```env
+   # 数据库配置
+   DB_HOST=localhost
+   DB_USER=root
+   DB_PASSWORD=your_password  # <--- 修改为你的 MySQL 密码
+   DB_NAME=exam_platform
+
+   # 多模态模型 API 配置（AI 阅卷需要）
+   MM_API_KEY=your_api_key  # <--- 替换为你的 API Key
+   ```
+   > `.env` 文件已被 `.gitignore` 忽略，不会提交到版本控制，避免泄露密码和 API Key。
 5. 启动后端服务：
    ```bash
    python app_main.py

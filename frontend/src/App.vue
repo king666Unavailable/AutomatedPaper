@@ -6,7 +6,7 @@ const students = ref([])
 
 onMounted(async () => {
   try {
-  const res = await axios.get('http://localhost:8001/api/students')
+  const res = await axios.get('/api/students')
     students.value = res.data.data || []
   } catch (e) {
     console.error('获取学生列表失败', e)

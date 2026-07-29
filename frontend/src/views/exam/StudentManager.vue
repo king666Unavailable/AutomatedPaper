@@ -332,7 +332,7 @@ const searchKeyword = ref('')
 // 获取考试学生
 const fetchExamStudents = async () => {
   try {
-    const response = await axios.get(`http://localhost:8001/api/exams/${props.examId}/students`)
+    const response = await axios.get(`/api/exams/${props.examId}/students`)
     examStudents.value = response.data.data || []
     emit('update:students', examStudents.value)
   } catch (error) {
@@ -344,7 +344,7 @@ const fetchExamStudents = async () => {
 // 获取所有学生
 const fetchAllStudents = async () => {
   try {
-    const response = await axios.get('http://localhost:8001/api/students')
+    const response = await axios.get('/api/students')
     allStudents.value = response.data.data || []
   } catch (error) {
     console.error('获取所有学生失败:', error)
@@ -358,7 +358,7 @@ const fetchAvailableStudents = async () => {
     if (searchKeyword.value) {
       params.search = searchKeyword.value
     }
-    const response = await axios.get(`http://localhost:8001/api/exams/${props.examId}/available-students`, { params })
+    const response = await axios.get(`/api/exams/${props.examId}/available-students`, { params })
     availableStudents.value = response.data.data || []
   } catch (error) {
     console.error('获取可用学生失败:', error)
@@ -393,7 +393,7 @@ const handleFileChange = (file) => {
 // 下载模板
 const downloadTemplate = async () => {
   try {
-    const response = await axios.get('http://localhost:8001/api/students/template', {
+    const response = await axios.get('/api/students/template', {
       responseType: 'blob'
     })
     const url = window.URL.createObjectURL(new Blob([response.data]))
@@ -425,7 +425,7 @@ const saveStudent = async (student) => {
   }
 
   try {
-    const response = await axios.put(`http://localhost:8001/api/students/${student.student_id}`, {
+    const response = await axios.put(`/api/students/${student.student_id}`, {
       name: student.name,
       student_number: student.student_number,
       class: student.class,
@@ -463,7 +463,7 @@ const saveExamStudent = async (student) => {
   }
 
   try {
-    const response = await axios.put(`http://localhost:8001/api/students/${student.student_id}`, {
+    const response = await axios.put(`/api/students/${student.student_id}`, {
       name: student.name,
       student_number: student.student_number,
       class: student.class,
@@ -504,7 +504,7 @@ const deleteGlobalStudent = async (student) => {
 
     if (!confirmed) return
 
-    const response = await axios.delete(`http://localhost:8001/api/students/${student.student_id}`)
+    const response = await axios.delete(`/api/students/${student.student_id}`)
 
     if (response.data.code === 1) {
       ElMessage.success('删除成功')
@@ -529,7 +529,7 @@ const addSelectedStudents = async () => {
 
   try {
     const studentIds = selectedStudents.value.map(student => student.student_id)
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/add-existing-students`, studentIds, {
+    const response = await axios.post(`/api/exams/${props.examId}/add-existing-students`, studentIds, {
       headers: { 'Content-Type': 'application/json' }
     })
 
@@ -550,7 +550,7 @@ const addSelectedStudents = async () => {
 // 添加单个学生到考试（通过“添加已录入学生”中的选择）
 const addStudentToExam = async () => {
   try {
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/students`, selectedStudentId.value, {
+    const response = await axios.post(`/api/exams/${props.examId}/students`, selectedStudentId.value, {
       headers: { 'Content-Type': 'application/json' }
     })
 
@@ -586,7 +586,7 @@ const removeBatchStudents = async () => {
     if (!confirmed) return
 
     const studentIds = selectedExamStudents.value.map(s => s.student_id)
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/students/remove-batch`, studentIds, {
+    const response = await axios.post(`/api/exams/${props.examId}/students/remove-batch`, studentIds, {
       headers: { 'Content-Type': 'application/json' }
     })
 
@@ -634,7 +634,7 @@ const batchAddStudents = async () => {
     }
 
     ElMessage.info('正在批量添加学生，请稍候...')
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/batch-add-students`, {
+    const response = await axios.post(`/api/exams/${props.examId}/batch-add-students`, {
       students: students
     })
 
@@ -680,7 +680,7 @@ const importStudentsFromFile = async () => {
 
   try {
     ElMessage.info('正在导入文件，请稍候...')
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/import-students`, formData, {
+    const response = await axios.post(`/api/exams/${props.examId}/import-students`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
 
@@ -703,7 +703,7 @@ const importStudentsFromFile = async () => {
 const reorderExamStudents = async () => {
   try {
     const studentIds = examStudents.value.map(s => s.student_id)
-    await axios.post(`http://localhost:8001/api/exams/${props.examId}/students/reorder`, studentIds)
+    await axios.post(`/api/exams/${props.examId}/students/reorder`, studentIds)
   } catch (error) {
     console.error('更新排序失败:', error)
     ElMessage.error('更新排序失败')

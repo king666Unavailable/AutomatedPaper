@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### One-shot setup
 
-- Initialize MySQL database: `mysql -u root -p exam_platform < database_schema.sql`
+- Initialize MySQL database: `mysql -u root -p exam_platform < backend/schema.sql`
 - Install backend dependencies: `cd backend && python -m venv venv && source venv/bin/activate && pip install -r requirements.txt`
 - Install frontend dependencies: `cd frontend && npm install`
 
@@ -50,7 +50,8 @@ No test framework is configured. There is no command to run tests or a single te
 ### Database
 
 - MySQL database `exam_platform`.
-- Core tables: `exams`, `students`, `exam_students`, `questions`, `exam_questions`, `users`, `answer_sheets`, `student_scores`.
+- Core tables: `exams`, `students`, `exam_students`, `questions`, `exam_questions`, `users`, `answer_sheets`, `student_scores`, `grading_jobs`.
+- `student_scores.student_answer` stores the OCR-recognized student answer text; `recognition_correct` is a manual annotation flag for the recognition result.
 - `students` and `questions` are global resource pools. An exam links to them through `exam_students` and `exam_questions`, allowing reuse across exams.
 
 ### AI grading and image handling

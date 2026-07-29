@@ -1,83 +1,168 @@
+-- ============================================
 -- 试卷图片分析和AI阅卷实验平台数据库表结构
+-- ============================================
 
 -- 创建数据库
-CREATE DATABASE IF NOT EXISTS exam_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE exam_platform;
+CREATE DATABASE IF NOT EXISTS `exam_platform` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE `exam_platform`;
 
--- 考试表
-CREATE TABLE exams (
-    exam_id INT AUTO_INCREMENT PRIMARY KEY,
-    exam_name VARCHAR(255) NOT NULL COMMENT '考试名称',
-    description TEXT COMMENT '考试描述',
-    exam_date DATETIME NULL COMMENT '开考时间',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    status ENUM('created', 'uploading', 'processing', 'completed', 'graded') DEFAULT 'created' COMMENT '考试状态',
-    total_questions INT DEFAULT NULL COMMENT '总题数（参考答案识别成功后自动设置）',
-    total_score INT DEFAULT NULL COMMENT '总分（参考答案识别成功后自动设置）'
-) COMMENT '考试信息表';
+-- ============================================
+-- 1. 用户表
+-- ============================================
+CREATE TABLE `users` (
+  `user_id` int NOT NULL AUTO_INCREMENT,
+  `username` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '用户名',
+  `password_hash` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '密码哈希',
+  `email` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '邮箱',
+  `role` enum('admin','teacher','student') COLLATE utf8mb4_unicode_ci DEFAULT 'teacher' COMMENT '用户角色',
+  `is_active` tinyint(1) DEFAULT '1' COMMENT '是否激活',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `last_login` timestamp NULL DEFAULT NULL COMMENT '最后登录时间',
+  PRIMARY KEY (`user_id`),
+  UNIQUE KEY `username` (`username`),
+  UNIQUE KEY `email` (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户信息表';
 
--- 学生表
-CREATE TABLE students (
-    student_id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(100) NOT NULL COMMENT '学生姓名',
-    student_number VARCHAR(50) UNIQUE COMMENT '学号',
-    class VARCHAR(100) COMMENT '班级',
-    contact_info TEXT COMMENT '联系方式',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
-) COMMENT '学生信息表';
+-- ============================================
+-- 2. 考试表
+-- ============================================
+CREATE TABLE `exams` (
+  `exam_id` int NOT NULL AUTO_INCREMENT,
+  `exam_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '考试名称',
+  `description` text COLLATE utf8mb4_unicode_ci COMMENT '考试描述',
+  `exam_date` datetime DEFAULT NULL COMMENT '开考时间',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `status` enum('created','uploading','processing','completed','graded') COLLATE utf8mb4_unicode_ci DEFAULT 'created' COMMENT '考试状态',
+  `total_questions` int DEFAULT NULL COMMENT '总题数',
+  `total_score` int DEFAULT NULL COMMENT '总分',
+  `images_per_student` int NOT NULL DEFAULT '4' COMMENT '每个学生答题卡图片数量',
+  `answer_sheet_layout` text COLLATE utf8mb4_unicode_ci COMMENT '答题卡布局JSON',
+  PRIMARY KEY (`exam_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='考试信息表';
 
--- 考试学生关联表
-CREATE TABLE exam_students (
-    exam_student_id INT AUTO_INCREMENT PRIMARY KEY,
-    exam_id INT NOT NULL,
-    student_id INT NOT NULL,
-    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '分配时间',
-    sort_order INT DEFAULT 0 COMMENT '排序顺序',
-    FOREIGN KEY (exam_id) REFERENCES exams(exam_id) ON DELETE CASCADE,
-    FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
-    UNIQUE KEY unique_exam_student (exam_id, student_id)
-) COMMENT '考试学生关联表';
+-- ============================================
+-- 3. 学生表
+-- ============================================
+CREATE TABLE `students` (
+  `student_id` int NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '学生姓名',
+  `student_number` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '学号',
+  `class` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '班级',
+  `contact_info` text COLLATE utf8mb4_unicode_ci COMMENT '联系方式',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`student_id`),
+  UNIQUE KEY `student_number` (`student_number`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生信息表';
 
--- 题目表
-CREATE TABLE questions (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    type VARCHAR(50) NOT NULL COMMENT '题型',
-    content TEXT COMMENT '题目内容',
-    score DECIMAL(5,2) DEFAULT 0 COMMENT '分值',
-    reference_answer TEXT COMMENT '参考答案',
-    scoring_rules TEXT COMMENT '赋分规则',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
-) COMMENT '题目信息表';
+-- ============================================
+-- 4. 题目表
+-- ============================================
+CREATE TABLE `questions` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '题型',
+  `content` text COLLATE utf8mb4_unicode_ci COMMENT '题目内容',
+  `score` decimal(5,2) DEFAULT '0.00' COMMENT '分值',
+  `reference_answer` text COLLATE utf8mb4_unicode_ci COMMENT '参考答案',
+  `scoring_rules` text COLLATE utf8mb4_unicode_ci COMMENT '赋分规则',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `parent_id` int DEFAULT NULL COMMENT '所属大题ID，指向本表的id',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='题目信息表';
 
--- 考试题目关系表
-CREATE TABLE exam_questions (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    question_id INT NOT NULL COMMENT '题目ID',
-    exam_id INT NOT NULL COMMENT '考试ID',
-    question_order INT NOT NULL COMMENT '题目序号',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE,
-    FOREIGN KEY (exam_id) REFERENCES exams(exam_id) ON DELETE CASCADE,
-    UNIQUE KEY unique_exam_question (exam_id, question_id),
-    UNIQUE KEY unique_exam_order (exam_id, question_order)
-) COMMENT '考试题目关联表';
+-- ============================================
+-- 5. 考试-题目关联表
+-- ============================================
+CREATE TABLE `exam_questions` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `question_id` int NOT NULL COMMENT '题目ID',
+  `exam_id` int NOT NULL COMMENT '考试ID',
+  `question_order` int NOT NULL COMMENT '题目序号',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_exam_question` (`exam_id`,`question_id`),
+  UNIQUE KEY `unique_exam_order` (`exam_id`,`question_order`),
+  KEY `question_id` (`question_id`),
+  CONSTRAINT `exam_questions_ibfk_1` FOREIGN KEY (`question_id`) REFERENCES `questions` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `exam_questions_ibfk_2` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`exam_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='考试题目关联表';
 
--- 用户表
-CREATE TABLE users (
-    user_id INT AUTO_INCREMENT PRIMARY KEY,
-    username VARCHAR(50) UNIQUE NOT NULL COMMENT '用户名',
-    password_hash VARCHAR(255) NOT NULL COMMENT '密码哈希',
-    email VARCHAR(100) UNIQUE COMMENT '邮箱',
-    role ENUM('admin', 'teacher', 'student') DEFAULT 'teacher' COMMENT '用户角色',
-    is_active BOOLEAN DEFAULT TRUE COMMENT '是否激活',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    last_login TIMESTAMP NULL COMMENT '最后登录时间'
-) COMMENT '用户信息表';
+-- ============================================
+-- 6. 考试-学生关联表
+-- ============================================
+CREATE TABLE `exam_students` (
+  `exam_student_id` int NOT NULL AUTO_INCREMENT,
+  `exam_id` int NOT NULL,
+  `student_id` int NOT NULL,
+  `assigned_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '分配时间',
+  `sort_order` int DEFAULT '0' COMMENT '排序顺序',
+  PRIMARY KEY (`exam_student_id`),
+  UNIQUE KEY `unique_exam_student` (`exam_id`,`student_id`),
+  KEY `idx_exam_students_exam_id` (`exam_id`),
+  KEY `idx_exam_students_student_id` (`student_id`),
+  CONSTRAINT `exam_students_ibfk_1` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`exam_id`) ON DELETE CASCADE,
+  CONSTRAINT `exam_students_ibfk_2` FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='考试学生关联表';
 
--- 创建索引优化查询性能
-CREATE INDEX idx_exam_students_exam_id ON exam_students(exam_id);
-CREATE INDEX idx_exam_students_student_id ON exam_students(student_id);
+-- ============================================
+-- 7. 答题卡图片表（当前实际使用）
+-- ============================================
+CREATE TABLE `answer_sheets` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `exam_id` int NOT NULL,
+  `student_id` int NOT NULL,
+  `filename` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '原始文件名',
+  `file_path` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '图片存储路径',
+  `uploaded_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `page_order` int NOT NULL DEFAULT '0' COMMENT '图片顺序（从0开始）',
+  `processed_file_path` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '预处理后的图片路径',
+  PRIMARY KEY (`id`),
+  KEY `student_id` (`student_id`),
+  KEY `idx_exam_student_order` (`exam_id`,`student_id`,`page_order`),
+  CONSTRAINT `answer_sheets_ibfk_1` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`exam_id`) ON DELETE CASCADE,
+  CONSTRAINT `answer_sheets_ibfk_2` FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生答题图片表';
+
+-- ============================================
+-- 8. 学生成绩明细表（当前实际使用）
+-- ============================================
+CREATE TABLE `student_scores` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `exam_id` int NOT NULL,
+  `student_id` int NOT NULL,
+  `question_id` int NOT NULL,
+  `score` decimal(5,2) NOT NULL,
+  `feedback` text COLLATE utf8mb4_unicode_ci COMMENT '评语',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `student_answer` text COLLATE utf8mb4_unicode_ci COMMENT '学生答案',
+  `recognition_correct` tinyint(1) DEFAULT '1' COMMENT '识别结果人工标注：1正确，0错误',
+  `corrected_answer` text COLLATE utf8mb4_unicode_ci COMMENT '人工修正后的学生答案',
+  `manual_reviewed` tinyint(1) DEFAULT '0' COMMENT '是否已在人工阅卷界面查看过：1已查看，0未查看',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_scoring` (`exam_id`,`student_id`,`question_id`),
+  KEY `student_id` (`student_id`),
+  KEY `question_id` (`question_id`),
+  CONSTRAINT `student_scores_ibfk_1` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`exam_id`) ON DELETE CASCADE,
+  CONSTRAINT `student_scores_ibfk_2` FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE CASCADE,
+  CONSTRAINT `student_scores_ibfk_3` FOREIGN KEY (`question_id`) REFERENCES `questions` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生成绩明细表';
+
+-- ============================================
+-- 9. AI阅卷任务表
+-- ============================================
+CREATE TABLE `grading_jobs` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `exam_id` int NOT NULL,
+  `status` enum('pending','processing','completed','failed') COLLATE utf8mb4_unicode_ci DEFAULT 'pending',
+  `total_students` int DEFAULT '0',
+  `processed_students` int DEFAULT '0',
+  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `exam_id` (`exam_id`),
+  CONSTRAINT `grading_jobs_ibfk_1` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`exam_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI阅卷任务记录表';

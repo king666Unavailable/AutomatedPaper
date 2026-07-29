@@ -88,20 +88,26 @@ AutomatedPaper/
     *   `frontend/src/views/exam/ScoreManager.vue`: 展示成绩表格和详情。
 
 ## 数据库设计说明
-项目使用 MySQL 关系型数据库，核心表结构定义在 `database_schema.sql` 中。
+项目使用 MySQL 关系型数据库，当前有效表结构定义在 `backend/schema.sql` 中（项目根目录下的 `database_schema.sql` 已滞后，初始化请使用 `backend/schema.sql`）。
 
 | 表名 | 中文名 | 描述 | 关键字段 |
 | :--- | :--- | :--- | :--- |
-| **exams** | 考试表 | 存储考试的基本元数据 | `exam_id` (PK), `status` (状态: created/processing/graded) |
-| **students** | 学生表 | 全局学生信息库，不依附于特定考试 | `student_id` (PK), `student_number` (Unique 学号) |
+| **exams** | 考试表 | 存储考试的基本元数据 | `exam_id` (PK), `status` (状态), `images_per_student` (每生图片数), `answer_sheet_layout` (答题卡布局 JSON) |
+| **students** | 学生表 | 全局学生信息库，不依附于特定考试 | `student_id` (PK), `student_number` (Unique 学号), `class` (班级) |
 | **exam_students** | 考试-学生关联表 | **多对多关系表**。记录某次考试有哪些学生参加 | `exam_id` (FK), `student_id` (FK), `sort_order` (考场排序) |
-| **questions** | 题目表 | 题目库，存储题目内容和标准答案 | `id` (PK), `content`, `reference_answer`, `scoring_rules` |
+| **questions** | 题目表 | 题目库，存储题目内容、分值、标准答案和评分规则 | `id` (PK), `content`, `reference_answer`, `scoring_rules`, `score` |
 | **exam_questions** | 考试-题目关联表 | **多对多关系表**。定义某次考试包含哪些题目及顺序 | `exam_id` (FK), `question_id` (FK), `question_order` (题号) |
-| **users** | 用户表 | 教师/管理员登录认证 | `username`, `password_hash`, `role` |
+| **answer_sheets** | 答题卡图片表 | 存储学生上传的答题卡图片路径及预处理后的图片路径 | `id` (PK), `exam_id`, `student_id`, `filename`, `file_path`, `processed_file_path`, `page_order` |
+| **student_scores** | 学生成绩明细表 | 存储每名学生每道题的 AI 阅卷结果，**识别的学生答案也存放在这里** | `id` (PK), `exam_id`, `student_id`, `question_id`, `score`, `student_answer`, `recognition_correct` |
+| **grading_jobs** | AI阅卷任务表 | 记录 AI 阅卷任务的进度和状态 | `id` (PK), `exam_id`, `status`, `total_students`, `processed_students` |
+| **users** | 用户表 | 教师/管理员登录认证 | `user_id` (PK), `username`, `password_hash`, `role` |
+| answer_images | 答题卡图片表（旧） | 旧表，当前代码未使用 | — |
+| scores | 成绩明细表（旧） | 旧表，当前代码未使用 | — |
 
 > **设计思路**: `students` 和 `questions` 表设计为**全局资源池**。
 > *   同一个学生可以参加多个 `exams` (通过 `exam_students` 关联)。
 > *   同一道题目可以被多场 `exams` 复用 (通过 `exam_questions` 关联)，方便组卷。
+> *   `student_scores.student_answer` 字段保存 AI/OCR 识别出的学生答案原文；`recognition_correct` 用于人工标注该识别结果是否正确。
 
 
 ## 技术栈
@@ -129,9 +135,9 @@ AutomatedPaper/
    ```sql
    CREATE DATABASE exam_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
    ```
-2. 运行项目根目录下的 `database_schema.sql` 脚本，初始化表结构。
+2. 运行 `backend/schema.sql` 脚本，初始化表结构。
    ```bash
-   mysql -u root -p exam_platform < database_schema.sql
+   mysql -u root -p exam_platform < backend/schema.sql
    ```
 
 ### 3. 后端部署

@@ -199,7 +199,7 @@ const handleLogin = async () => {
   error.value = ''
   
   try {
-    const response = await axios.post('http://localhost:8001/api/login', {
+    const response = await axios.post('/api/login', {
       username: username.value,
       password: password.value
     })
@@ -228,7 +228,7 @@ const handleRegister = async () => {
       regSuccess.value = ''
       
       try {
-        const response = await axios.post('http://localhost:8001/api/register', {
+        const response = await axios.post('/api/register', {
           username: registerForm.username,
           password: registerForm.password,
           email: registerForm.email || undefined

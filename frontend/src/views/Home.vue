@@ -159,7 +159,7 @@ const editingExam = ref({})
 // 获取考试列表
 const fetchExams = async () => {
   try {
-    const response = await axios.get('http://localhost:8001/api/exams')
+    const response = await axios.get('/api/exams')
     exams.value = response.data.data || []
   } catch (error) {
     console.error('获取考试列表失败:', error)
@@ -170,7 +170,7 @@ const fetchExams = async () => {
 // 创建考试
 const createExam = async () => {
   try {
-    const response = await axios.post('http://localhost:8001/api/exams', newExam.value)
+    const response = await axios.post('/api/exams', newExam.value)
     if (response.data.code === 1) {
       ElMessage.success('创建成功')
       showCreateDialog.value = false
@@ -194,7 +194,7 @@ const editExam = (exam) => {
 // 更新考试
 const updateExam = async () => {
   try {
-    const response = await axios.put(`http://localhost:8001/api/exams/${editingExam.value.exam_id}`, editingExam.value)
+    const response = await axios.put(`/api/exams/${editingExam.value.exam_id}`, editingExam.value)
     if (response.data.code === 1) {
       ElMessage.success('更新成功')
       showEditDialog.value = false
@@ -217,7 +217,7 @@ const deleteExam = async (examId) => {
       type: 'warning'
     })
 
-    const response = await axios.delete(`http://localhost:8001/api/exams/${examId}`)
+    const response = await axios.delete(`/api/exams/${examId}`)
     if (response.data.code === 1) {
       ElMessage.success('删除成功')
       await fetchExams()
@@ -242,7 +242,7 @@ const triggerAIGrading = async (examId) => {
     })
 
     ElMessage.info('正在启动AI阅卷...')
-    const response = await axios.post(`http://localhost:8001/api/exams/${examId}/grade`)
+    const response = await axios.post(`/api/exams/${examId}/grade`)
 
     if (response.data.code === 1) {
       ElMessage.success(`AI阅卷完成！处理了 ${response.data.data.graded_count} 个学生`)

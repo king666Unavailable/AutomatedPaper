@@ -8,7 +8,7 @@ encoded_password = quote_plus(DATABASE_CONFIG['password'])
 
 # 创建数据库连接
 engine = create_engine(
-    f"mysql+pymysql://{DATABASE_CONFIG['user']}:{encoded_password}@{DATABASE_CONFIG['host']}:3306/{DATABASE_CONFIG['database']}",
+    f"mysql+pymysql://{DATABASE_CONFIG['user']}:{encoded_password}@{DATABASE_CONFIG['host']}:3306/{DATABASE_CONFIG['database']}?charset=utf8mb4",
     echo=True
 )
 

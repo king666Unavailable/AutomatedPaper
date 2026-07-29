@@ -56,6 +56,7 @@
                 size="small"
                 @change="updateImagesPerStudent"
               />
+              <span class="images-per-student-hint">仅用于“批量姓名匹配”上传时按每组 N 张分组；手动选择学生上传不受此限制</span>
             </div>
           </div>
         </div>
@@ -109,6 +110,15 @@
           </el-tab-pane>
 
 
+          <!-- 问答题人工阅卷 -->
+          <el-tab-pane label="问答题人工阅卷" name="manual-grading">
+            <div class="tab-content">
+              <ManualGrading
+                :exam-id="examId"
+              />
+            </div>
+          </el-tab-pane>
+
           <!-- 成绩管理 -->
           <el-tab-pane label="成绩管理" name="scores">
             <div class="tab-content">
@@ -158,6 +168,7 @@ import QuestionManager from './exam/QuestionManager.vue'
 import AnswerManager from './exam/AnswerManager.vue'
 import AIGradingConsole from './exam/AIGradingConsole.vue'
 import ScoreManager from './exam/ScoreManager.vue'
+import ManualGrading from './exam/ManualGrading.vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Upload, DocumentAdd, UploadFilled, Search, User, Refresh, Cpu, Delete, Rank } from '@element-plus/icons-vue'
@@ -204,7 +215,7 @@ const currentTotalScore = computed(() => {
 // 获取考试信息
 const fetchExam = async () => {
   try {
-    const response = await axios.get(`http://localhost:8001/api/exams`)
+    const response = await axios.get(`/api/exams`)
     const exams = response.data.data || []
     exam.value = exams.find(e => e.exam_id == examId)
     if (exam.value && exam.value.images_per_student === undefined) {
@@ -221,7 +232,7 @@ const fetchExam = async () => {
 const updateImagesPerStudent = async () => {
   if (!exam.value) return
   try {
-    await axios.put(`http://localhost:8001/api/exams/${examId}`, {
+    await axios.put(`/api/exams/${examId}`, {
       images_per_student: exam.value.images_per_student
     })
     ElMessage.success('每生图片数已更新')
@@ -257,7 +268,7 @@ const handleQuestionsUpdate = (newQuestions) => {
 // 获取成绩列表
 const fetchScores = async () => {
   try {
-    const response = await axios.get(`http://localhost:8001/api/exams/${examId}/scores`)
+    const response = await axios.get(`/api/exams/${examId}/scores`)
     if (response.data.code === 1) {
       scoreList.value = response.data.data.students || []
     } else {
@@ -519,5 +530,11 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+}
+
+.images-per-student-hint {
+  font-size: 0.8rem;
+  color: #909399;
+  margin-left: 8px;
 }
 </style>

@@ -36,6 +36,39 @@ def ensure_upload_dir(exam_id: int) -> str:
     return target_dir
 
 
+def normalize_path(path: str) -> str:
+    """统一使用正斜杠，避免 Windows 反斜杠导致前端 URL 拼接错误。"""
+    if not path:
+        return path
+    return path.replace('\\', '/')
+
+
+def safe_cv2_imwrite(path: str, img: np.ndarray) -> bool:
+    """
+    安全保存 OpenCV 图片。
+    cv2.imwrite 在 Windows 上处理非 ASCII 文件名时可能失败或产生乱码文件名，
+    因此通过 cv2.imencode 编码为内存缓冲区后再用标准文件写入。
+    """
+    try:
+        ext = os.path.splitext(path)[1].lower()
+        if ext in ('.jpg', '.jpeg'):
+            success, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        else:
+            # 默认使用 png
+            success, buffer = cv2.imencode('.png', img, [cv2.IMWRITE_PNG_COMPRESSION, 6])
+
+        if not success:
+            logger.error(f"cv2.imencode 编码失败: {path}")
+            return False
+
+        with open(path, 'wb') as f:
+            f.write(buffer)
+        return True
+    except Exception as e:
+        logger.error(f"safe_cv2_imwrite 失败: {path}, 错误: {e}")
+        return False
+
+
 # ==================== 答题卡预处理函数 ====================
 def auto_orient(image: np.ndarray, image_path: str) -> np.ndarray:
     """
@@ -649,7 +682,8 @@ async def upload_exam_images(
                     file_path, layout, questions_per_section, section_types
                 )
                 if processed_img is not None:
-                    cv2.imwrite(processed_path, processed_img)
+                    if not safe_cv2_imwrite(processed_path, processed_img):
+                        processed_path = file_path
                 else:
                     processed_path = file_path
             except Exception as pp_err:
@@ -659,7 +693,7 @@ async def upload_exam_images(
             with engine.connect() as conn:
                 conn.execute(
                     text("""
-                    INSERT INTO answer_sheets 
+                    INSERT INTO answer_sheets
                     (exam_id, student_id, filename, file_path, processed_file_path, page_order)
                     VALUES (:exam_id, :student_id, :filename, :file_path, :processed_path, :page_order)
                     """),
@@ -667,8 +701,8 @@ async def upload_exam_images(
                         "exam_id": exam_id,
                         "student_id": student_id,
                         "filename": file.filename,
-                        "file_path": file_path,
-                        "processed_path": processed_path,
+                        "file_path": normalize_path(file_path),
+                        "processed_path": normalize_path(processed_path),
                         "page_order": page_order
                     }
                 )
@@ -885,13 +919,14 @@ def mask_image_rects(exam_id: int, image_id: int, rects: List[dict] = Body(..., 
         # 保存结果（直接覆盖原预处理路径，若原本没有预处理图则新建）
         base, ext = os.path.splitext(img.file_path) if img.file_path else os.path.splitext(img.processed_file_path)
         processed_path = img.processed_file_path if img.processed_file_path else f"{base}_processed.png"
-        cv2.imwrite(processed_path, source_img)
+        if not safe_cv2_imwrite(processed_path, source_img):
+            raise HTTPException(status_code=500, detail="保存遮盖结果失败")
 
         # 更新数据库（确保 processed_file_path 指向该文件）
         with engine.connect() as conn:
             conn.execute(
                 text("UPDATE answer_sheets SET processed_file_path = :path WHERE id = :image_id"),
-                {"path": processed_path, "image_id": image_id}
+                {"path": normalize_path(processed_path), "image_id": image_id}
             )
             conn.commit()
 
@@ -959,13 +994,14 @@ def reset_image_mask(exam_id: int, image_id: int):
 
         base, ext = os.path.splitext(file_path)
         processed_path = f"{base}_processed.png"
-        cv2.imwrite(processed_path, processed_img)
+        if not safe_cv2_imwrite(processed_path, processed_img):
+            raise HTTPException(status_code=500, detail="保存预处理图失败")
 
         # 更新数据库
         with engine.connect() as conn:
             conn.execute(
                 text("UPDATE answer_sheets SET processed_file_path = :path WHERE id = :image_id"),
-                {"path": processed_path, "image_id": image_id}
+                {"path": normalize_path(processed_path), "image_id": image_id}
             )
             conn.commit()
 

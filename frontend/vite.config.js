@@ -5,12 +5,22 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: {
+    host:'0.0.0.0',
     proxy: {
       '/api': {
-        target: 'http://localhost:8001',
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
-        rewrite: (path) => path  // 保持路径不变
+        rewrite: (path) => path,
+        secure: false,
+        ws: true
+      },
+      // 新增静态图片转发规则
+      '/uploads': {
+        target: 'http://127.0.0.1:8001',
+        changeOrigin: true,
+        secure: false
       }
     }
+        
   }
 })

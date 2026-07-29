@@ -14,6 +14,8 @@ class Exam(Base):
     status = Column(Enum('created', 'uploading', 'processing', 'completed', 'graded'), default='created')
     total_questions = Column(Integer)
     total_score = Column(Integer)
+    images_per_student = Column(Integer, default=2)
+    answer_sheet_layout = Column(Text)
 
 class Student(Base):
     __tablename__ = 'students'
@@ -89,6 +91,10 @@ class Score(Base):
     question_id = Column(Integer, ForeignKey('questions.id', ondelete='CASCADE'))
     score = Column(Float, nullable=False)
     feedback = Column(Text)
+    student_answer = Column(Text)
+    recognition_correct = Column(Boolean, default=True)
+    corrected_answer = Column(Text)
+    manual_reviewed = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

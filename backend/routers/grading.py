@@ -996,12 +996,12 @@ async def process_grading(exam_id: int, job_id: int):
                 with engine.connect() as conn:
                     conn.execute(
                         text("""
-                             INSERT INTO student_scores (exam_id, student_id, question_id, score, student_answer)
-                             VALUES (:exam_id, :student_id, :question_id, :score, :student_answer) ON DUPLICATE KEY
+                             INSERT INTO student_scores (exam_id, student_id, question_id, score, student_answer, recognition_correct)
+                             VALUES (:exam_id, :student_id, :question_id, :score, :student_answer, TRUE) ON DUPLICATE KEY
                              UPDATE
                                  score =
                              VALUES (score), student_answer =
-                             VALUES (student_answer), updated_at = CURRENT_TIMESTAMP
+                             VALUES (student_answer), recognition_correct = TRUE, updated_at = CURRENT_TIMESTAMP
                              """),
                         {
                             "exam_id": exam_id,
@@ -1227,10 +1227,10 @@ async def process_single_student_grading(exam_id: int, student_id: int, job_id: 
 
                 conn.execute(
                     text("""
-                        INSERT INTO student_scores (exam_id, student_id, question_id, score, student_answer)
-                        VALUES (:exam_id, :student_id, :question_id, :score, :student_answer)
+                        INSERT INTO student_scores (exam_id, student_id, question_id, score, student_answer, recognition_correct)
+                        VALUES (:exam_id, :student_id, :question_id, :score, :student_answer, TRUE)
                         ON DUPLICATE KEY UPDATE
-                        score = VALUES(score), student_answer = VALUES(student_answer), updated_at = CURRENT_TIMESTAMP
+                        score = VALUES(score), student_answer = VALUES(student_answer), recognition_correct = TRUE, updated_at = CURRENT_TIMESTAMP
                         """),
                     {
                         "exam_id": exam_id,

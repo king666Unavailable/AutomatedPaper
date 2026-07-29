@@ -239,7 +239,7 @@ const getImageUrl = (img) => {
   let relative = filePath
   if (relative.startsWith('./')) relative = relative.slice(2)
   if (relative.startsWith('uploads/')) relative = relative.slice(8)
-  return `http://localhost:8001/uploads/${relative}?r=${Math.random()}`
+  return `/uploads/${relative}?r=${Math.random()}`
 }
 
 // 预览拖拽/缩放
@@ -301,11 +301,11 @@ const closePreview = () => { previewVisible.value = false }
 // 获取列表、上传、删除、排序等逻辑保持不变...
 const fetchStudentImages = async () => {
   try {
-    const studentsRes = await axios.get(`http://localhost:8001/api/exams/${props.examId}/students`)
+    const studentsRes = await axios.get(`/api/exams/${props.examId}/students`)
     if (studentsRes.data.code !== 1) { ElMessage.error('获取学生列表失败'); return }
     const students = studentsRes.data.data
 
-    const imagesRes = await axios.get(`http://localhost:8001/api/exams/${props.examId}/images`)
+    const imagesRes = await axios.get(`/api/exams/${props.examId}/images`)
     if (imagesRes.data.code !== 1) { ElMessage.error('获取图片列表失败'); return }
     const images = imagesRes.data.data
 
@@ -345,7 +345,7 @@ const uploadImages = async () => {
   }
   uploadingSingle.value = true
   try {
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/images`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+    const response = await axios.post(`/api/exams/${props.examId}/images`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
     if (response.data.code === 1) {
       ElMessage.success(`上传成功，共 ${response.data.data.uploaded_count} 个文件`)
       showUploadDialog.value = false; uploadFileList.value = []; await fetchStudentImages()
@@ -357,7 +357,7 @@ const uploadImages = async () => {
 const deleteImage = async (imageId) => {
   try {
     await ElMessageBox.confirm('确定删除该图片吗？', '提示', { type: 'warning' })
-    const response = await axios.delete(`http://localhost:8001/api/exams/${props.examId}/images/${imageId}`)
+    const response = await axios.delete(`/api/exams/${props.examId}/images/${imageId}`)
     if (response.data.code === 1) { ElMessage.success('删除成功'); await fetchStudentImages() }
     else { ElMessage.error(response.data.msg || '删除失败') }
   } catch (error) { if (error !== 'cancel') { console.error('删除失败:', error); ElMessage.error('删除失败') } }
@@ -366,7 +366,7 @@ const deleteImage = async (imageId) => {
 const deleteAllImages = async (studentId, studentName) => {
   try {
     await ElMessageBox.confirm(`确定要删除 ${studentName} 的所有答题卡图片吗？此操作不可恢复。`, '警告', { confirmButtonText: '确定删除', cancelButtonText: '取消', type: 'warning' })
-    const response = await axios.delete(`http://localhost:8001/api/exams/${props.examId}/students/${studentId}/images`)
+    const response = await axios.delete(`/api/exams/${props.examId}/students/${studentId}/images`)
     if (response.data.code === 1) { ElMessage.success(`已删除 ${studentName} 的所有图片`); await fetchStudentImages() }
     else { ElMessage.error(response.data.msg || '删除失败') }
   } catch (error) { if (error !== 'cancel') { console.error('批量删除失败:', error); ElMessage.error('批量删除失败') } }
@@ -375,7 +375,7 @@ const deleteAllImages = async (studentId, studentName) => {
 const updateImageOrder = async (img) => {
   const formData = new FormData(); formData.append('page_order', img.page_order)
   try {
-    const response = await axios.put(`http://localhost:8001/api/exams/${props.examId}/images/${img.id}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+    const response = await axios.put(`/api/exams/${props.examId}/images/${img.id}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
     if (response.data.code === 1) { ElMessage.success('顺序更新成功'); await fetchStudentImages() }
     else { ElMessage.error(response.data.msg || '更新失败'); await fetchStudentImages() }
   } catch (error) { console.error('更新顺序失败:', error); ElMessage.error('更新顺序失败'); await fetchStudentImages() }
@@ -384,7 +384,7 @@ const updateImageOrder = async (img) => {
 const handleAddFile = async (file, studentId) => {
   const formData = new FormData(); formData.append('files', file.raw); formData.append('student_ids', studentId)
   try {
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/images`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+    const response = await axios.post(`/api/exams/${props.examId}/images`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
     if (response.data.code === 1) { ElMessage.success('图片添加成功'); await fetchStudentImages() }
     else { ElMessage.error(response.data.msg || '添加失败') }
   } catch (error) { console.error('添加图片失败:', error); ElMessage.error('添加图片失败') }
@@ -411,7 +411,7 @@ const handleImportFolder = async () => {
       const formData = new FormData(); for (const file of group.files) { formData.append('files', file) }
       if (autoMatchMode.value) { formData.append('auto_match', true) } else { formData.append('student_ids', group.studentId) }
       try {
-        const res = await axios.post(`http://localhost:8001/api/exams/${props.examId}/images`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+        const res = await axios.post(`/api/exams/${props.examId}/images`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
         if (res.data.code === 1) { successCount += group.files.length } else { failCount += group.files.length; console.error(`学生 ${group.studentId} 组上传失败:`, res.data.msg) }
       } catch (err) { failCount += group.files.length; console.error(`学生 ${group.studentId} 组上传异常:`, err) }
     }
@@ -426,7 +426,7 @@ const openEditDialog = (img) => {
   let filePath = img.processed_file_path || img.file_path
   if (filePath.startsWith('./')) filePath = filePath.slice(2)
   if (filePath.startsWith('uploads/')) filePath = filePath.slice(8)
-  editImageUrl.value = `http://localhost:8001/uploads/${filePath}`
+  editImageUrl.value = `/uploads/${filePath}`
   editRects.value = []
   showEditDialog.value = true
 }
@@ -494,7 +494,7 @@ const saveEdit = async () => {
     }))
 
     const response = await axios.post(
-      `http://localhost:8001/api/exams/${props.examId}/images/${editImageId.value}/mask`,
+      `/api/exams/${props.examId}/images/${editImageId.value}/mask`,
       { rects },
       { headers: { 'Content-Type': 'application/json' } }
     )
@@ -516,7 +516,7 @@ const resetMask = async () => {
   try {
     await ElMessageBox.confirm('确定要重置为未遮盖的预处理图吗？所有遮盖内容将丢失。', '提示', { type: 'warning' })
     const response = await axios.post(
-      `http://localhost:8001/api/exams/${props.examId}/images/${editImageId.value}/reset-mask`
+      `/api/exams/${props.examId}/images/${editImageId.value}/reset-mask`
     )
     if (response.data.code === 1) {
       ElMessage.success('已重置')

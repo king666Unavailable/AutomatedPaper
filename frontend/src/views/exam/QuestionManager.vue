@@ -304,7 +304,7 @@ const searchKeyword = ref('')
 // 获取题目列表
 const fetchQuestions = async () => {
   try {
-    const response = await axios.get(`http://localhost:8001/api/exams/${props.examId}/questions`)
+    const response = await axios.get(`/api/exams/${props.examId}/questions`)
     questions.value = (response.data.data || []).sort((a, b) => a.question_order - b.question_order)
     emit('update:questions', questions.value)
   } catch (error) {
@@ -319,7 +319,7 @@ const fetchAvailableQuestions = async () => {
     if (searchKeyword.value) {
       params.search = searchKeyword.value
     }
-    const response = await axios.get(`http://localhost:8001/api/exams/${props.examId}/available-questions`, { params })
+    const response = await axios.get(`/api/exams/${props.examId}/available-questions`, { params })
     availableQuestions.value = response.data.data || []
   } catch (error) {
     console.error('获取可用题目失败:', error)
@@ -369,7 +369,7 @@ const handleSaveQuestion = async () => {
 
   try {
     if (isEditMode.value) {
-      await axios.put(`http://localhost:8001/api/questions/${currentQuestion.value.id}`, {
+      await axios.put(`/api/questions/${currentQuestion.value.id}`, {
         question_type: currentQuestion.value.question_type,
         content: currentQuestion.value.question_title,
         score: currentQuestion.value.total_score,
@@ -378,7 +378,7 @@ const handleSaveQuestion = async () => {
       })
       ElMessage.success('更新成功')
     } else {
-      await axios.post(`http://localhost:8001/api/exams/${props.examId}/questions`, {
+      await axios.post(`/api/exams/${props.examId}/questions`, {
         // question_order is optional now, backend handles it
         question_type: currentQuestion.value.question_type,
         content: currentQuestion.value.question_title,
@@ -415,7 +415,7 @@ const removeBatchQuestions = async () => {
     if (!confirmed) return
 
     const questionIds = selectedExamQuestions.value.map(q => q.id)
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/questions/remove-batch`, questionIds, {
+    const response = await axios.post(`/api/exams/${props.examId}/questions/remove-batch`, questionIds, {
       headers: { 'Content-Type': 'application/json' }
     })
 
@@ -443,7 +443,7 @@ const addSelectedQuestions = async () => {
 
   try {
     const questionIds = selectedAvailableQuestions.value.map(q => q.id)
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/add-existing-questions`, questionIds, {
+    const response = await axios.post(`/api/exams/${props.examId}/add-existing-questions`, questionIds, {
       headers: { 'Content-Type': 'application/json' }
     })
 
@@ -477,7 +477,7 @@ const deleteGlobalQuestion = async (question) => {
 
     if (!confirmed) return
 
-    const response = await axios.delete(`http://localhost:8001/api/questions/${question.id}`)
+    const response = await axios.delete(`/api/questions/${question.id}`)
 
     if (response.data.code === 1) {
       ElMessage.success('删除成功')
@@ -510,7 +510,7 @@ const importQuestionsFromFile = async () => {
 
   try {
     ElMessage.info('正在导入题目，请稍候...')
-    const response = await axios.post(`http://localhost:8001/api/exams/${props.examId}/import-questions`, formData, {
+    const response = await axios.post(`/api/exams/${props.examId}/import-questions`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
 
@@ -545,7 +545,7 @@ const handleAvailableSelectionChange = (selection) => {
 const reorderExamQuestions = async () => {
   try {
     const questionIds = questions.value.map(q => q.id)
-    await axios.post(`http://localhost:8001/api/exams/${props.examId}/questions/reorder`, questionIds)
+    await axios.post(`/api/exams/${props.examId}/questions/reorder`, questionIds)
   } catch (error) {
     console.error('更新排序失败:', error)
     ElMessage.error('更新排序失败')

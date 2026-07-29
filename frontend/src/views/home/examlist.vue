@@ -294,7 +294,7 @@ const deleteExam = async () => {
   if (!examToDelete.value) return
 
   try {
-    const response = await axios.delete(`http://localhost:8001/api/exams/${examToDelete.value.exam_id}`)
+    const response = await axios.delete(`/api/exams/${examToDelete.value.exam_id}`)
 
     if (response.data.code === 1) {
       // 删除成功，移除本地数组中的考试
@@ -363,7 +363,7 @@ const saveExam = async () => {
 
     if (isEditMode.value) {
       // 更新考试
-      response = await axios.put(`http://localhost:8001/api/exams/${examForm.value.exam_id}`, {
+      response = await axios.put(`/api/exams/${examForm.value.exam_id}`, {
         exam_name: examForm.value.exam_name,
         description: examForm.value.description,
         exam_date: examForm.value.exam_date,
@@ -371,7 +371,7 @@ const saveExam = async () => {
       })
     } else {
       // 创建新考试
-      response = await axios.post('http://localhost:8001/api/exams', {
+      response = await axios.post('/api/exams', {
         exam_name: examForm.value.exam_name,
         description: examForm.value.description,
         exam_date: examForm.value.exam_date,
@@ -420,7 +420,7 @@ const logout = () => {
 
 const loadExams = async () => {
   try {
-    const res = await axios.get('http://localhost:8001/api/exams')
+    const res = await axios.get('/api/exams')
     exams.value = res.data.data || []
   } catch (e) {
     console.error('获取考试列表失败', e)

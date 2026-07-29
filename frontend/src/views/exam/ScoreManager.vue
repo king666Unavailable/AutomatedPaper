@@ -13,7 +13,13 @@
         </div>
       </template>
 
-      <el-table :data="studentList" border v-loading="loading">
+      <div class="sort-toggle" style="margin-bottom: 12px;">
+        <el-radio-group v-model="sortMode" size="small">
+          <el-radio-button value="rank">按排名排序</el-radio-button>
+          <el-radio-button value="student_id">按学号排序</el-radio-button>
+        </el-radio-group>
+      </div>
+      <el-table :data="sortedList" border v-loading="loading">
         <el-table-column type="index" label="排名" width="80" />
         <el-table-column prop="student_number" label="学号" width="150" />
         <el-table-column prop="class" label="班级" width="120" />
@@ -21,6 +27,21 @@
         <el-table-column label="得分" width="80">
           <template #default="{ row }">
             {{ row.total_score !== null ? row.total_score : '未评分' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="选择题" width="80">
+          <template #default="{ row }">
+            {{ row.choice_total !== null ? row.choice_total : '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="填空题" width="80">
+          <template #default="{ row }">
+            {{ row.fill_total !== null ? row.fill_total : '—' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="简答题" width="80">
+          <template #default="{ row }">
+            {{ row.subjective_total !== null ? row.subjective_total : '—' }}
           </template>
         </el-table-column>
         <el-table-column label="阅卷状态" width="100">
@@ -41,7 +62,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import axios from 'axios'
 
@@ -52,6 +73,23 @@ const props = defineProps({
 const loading = ref(false)
 const studentList = ref([])
 const examName = ref('')
+const sortMode = ref('rank')
+
+const sortedList = computed(() => {
+  const list = [...studentList.value]
+  if (sortMode.value === 'student_id') {
+    list.sort((a, b) => a.student_id - b.student_id)
+  } else {
+    // 按排名：已评分按总分降序，未评分放最后
+    list.sort((a, b) => {
+      if (a.total_score === null && b.total_score === null) return a.student_id - b.student_id
+      if (a.total_score === null) return 1
+      if (b.total_score === null) return -1
+      return b.total_score - a.total_score
+    })
+  }
+  return list
+})
 
 const formatDate = (dateStr) => {
   if (!dateStr) return ''
@@ -65,11 +103,11 @@ const fetchScores = async () => {
     if (res.data.code === 1) {
       const data = res.data.data
       examName.value = data.exam_info?.exam_name || ''
-      studentList.value = data.students.map(s => ({
+      studentList.value = (data.students || []).map(s => ({
         ...s,
         grading_status: s.total_score !== null ? 'completed' : 'pending',
         graded_at: s.graded_at || null
-      }))
+      })).sort((a, b) => a.student_id - b.student_id)
     } else {
       ElMessage.error(res.data.msg || '获取成绩失败')
     }

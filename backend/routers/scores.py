@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 import logging
-from typing import Dict
+from typing import Dict, Optional
 from pydantic import BaseModel
 from backend.database import engine, get_db
 from fastapi.responses import StreamingResponse
@@ -67,7 +67,7 @@ def get_exam_scores(exam_id: int):
             # 3. 题目列表（包含满分）
             questions_result = conn.execute(
                 text("""
-                SELECT q.id, q.content, q.score as max_score, eq.question_order
+                SELECT q.id, q.type, q.content, q.score as max_score, eq.question_order
                 FROM questions q
                 INNER JOIN exam_questions eq ON q.id = eq.question_id
                 WHERE eq.exam_id = :exam_id
@@ -80,7 +80,7 @@ def get_exam_scores(exam_id: int):
             # 4. 得分明细
             scores_result = conn.execute(
                 text("""
-                SELECT DISTINCT student_id, question_id, score, student_answer, updated_at
+                SELECT DISTINCT student_id, question_id, score, student_answer, recognition_correct, corrected_answer, manual_reviewed, updated_at
                 FROM student_scores
                 WHERE exam_id = :exam_id
                 """),
@@ -95,6 +95,9 @@ def get_exam_scores(exam_id: int):
                 scores_by_student[sid][row.question_id] = {
                     "score": float(row.score),
                     "student_answer": row.student_answer,
+                    "recognition_correct": bool(row.recognition_correct) if row.recognition_correct is not None else True,
+                    "corrected_answer": row.corrected_answer,
+                    "manual_reviewed": bool(row.manual_reviewed) if row.manual_reviewed is not None else False,
                     "updated_at": row.updated_at
                 }
                 if sid not in graded_at_map or (row.updated_at and row.updated_at > graded_at_map[sid]):
@@ -108,19 +111,33 @@ def get_exam_scores(exam_id: int):
 
                 question_scores = []
                 total_score = 0.0
+                choice_total = 0.0
+                fill_total = 0.0
+                subjective_total = 0.0
                 for q in questions:
                     qid = q["id"]
                     score_info = student_scores.get(qid)
                     score = score_info["score"] if score_info else None
                     if score is not None:
                         total_score += score
+                        qtype = q["type"]
+                        if qtype in ("选择题", "choice"):
+                            choice_total += score
+                        elif qtype in ("填空题", "fill_blank"):
+                            fill_total += score
+                        else:
+                            subjective_total += score
                     question_scores.append({
                         "question_id": qid,
                         "question_order": q["question_order"],
                         "content": q["content"],
+                        "type": q["type"],
                         "score": score,
                         "max_score": float(q["max_score"]) if q["max_score"] is not None else None,
-                        "student_answer": score_info["student_answer"] if score_info else None
+                        "student_answer": score_info["student_answer"] if score_info else None,
+                        "corrected_answer": score_info["corrected_answer"] if score_info else None,
+                        "recognition_correct": score_info["recognition_correct"] if score_info else True,
+                        "manual_reviewed": score_info["manual_reviewed"] if score_info else False
                     })
 
                 if exam_total is not None and total_score > exam_total:
@@ -133,6 +150,9 @@ def get_exam_scores(exam_id: int):
                     "student_number": student["student_number"],
                     "class": student["class"],
                     "total_score": total_score if total_score > 0 else None,
+                    "choice_total": choice_total if choice_total > 0 else None,
+                    "fill_total": fill_total if fill_total > 0 else None,
+                    "subjective_total": subjective_total if subjective_total > 0 else None,
                     "question_scores": question_scores,
                     "graded_at": graded_at_map.get(sid).isoformat() if graded_at_map.get(sid) else None
                 }
@@ -150,8 +170,8 @@ def get_exam_scores(exam_id: int):
                 if s["total_score"] is None:
                     s["rank"] = None
 
-            # 按总分降序排列（未评分的学生放在最后）
-            student_data_list.sort(key=lambda x: (x["total_score"] is None, -(x["total_score"] or 0)))
+            # 按学生ID升序排列，便于按顺序复核
+            student_data_list.sort(key=lambda x: x["student_id"])
 
             return {
                 "code": 1,
@@ -170,6 +190,9 @@ def get_exam_scores(exam_id: int):
 
 class ScoreUpdate(BaseModel):
     score: float
+    recognition_correct: Optional[bool] = None
+    corrected_answer: Optional[str] = None
+    manual_reviewed: Optional[bool] = None
 
 
 @router.put("/api/exams/{exam_id}/scores/{student_id}/{question_id}")
@@ -196,19 +219,181 @@ def update_question_score(
                 """),
                 {"exam_id": exam_id, "student_id": student_id, "question_id": question_id}
             )
+
+            update_fields = "score = VALUES(score)"
+            values = {
+                "exam_id": exam_id,
+                "student_id": student_id,
+                "question_id": question_id,
+                "score": data.score
+            }
+            recognition_value = "TRUE"
+            if data.recognition_correct is not None:
+                update_fields += ", recognition_correct = VALUES(recognition_correct)"
+                recognition_value = ":recognition_correct"
+                values["recognition_correct"] = data.recognition_correct
+
+            corrected_value = "NULL"
+            if data.corrected_answer is not None:
+                update_fields += ", corrected_answer = VALUES(corrected_answer)"
+                corrected_value = ":corrected_answer"
+                values["corrected_answer"] = data.corrected_answer
+
+            manual_reviewed_value = "NULL"
+            if data.manual_reviewed is not None:
+                update_fields += ", manual_reviewed = VALUES(manual_reviewed)"
+                manual_reviewed_value = ":manual_reviewed"
+                values["manual_reviewed"] = 1 if data.manual_reviewed else 0
+
             session.execute(
-                text("""
-                INSERT INTO student_scores (exam_id, student_id, question_id, score)
-                VALUES (:exam_id, :student_id, :question_id, :score)
-                ON DUPLICATE KEY UPDATE score = VALUES(score), updated_at = CURRENT_TIMESTAMP
+                text(f"""
+                INSERT INTO student_scores (exam_id, student_id, question_id, score, recognition_correct, corrected_answer, manual_reviewed)
+                VALUES (:exam_id, :student_id, :question_id, :score, {recognition_value}, {corrected_value}, {manual_reviewed_value})
+                ON DUPLICATE KEY UPDATE {update_fields}, updated_at = CURRENT_TIMESTAMP
                 """),
-                {"exam_id": exam_id, "student_id": student_id, "question_id": question_id, "score": data.score}
+                values
             )
             session.commit()
             return {"code": 1, "msg": "分数更新成功"}
     except Exception as e:
         logger.error(f"更新分数失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"更新分数失败: {str(e)}")
+
+
+@router.get("/api/exams/{exam_id}/subjective-questions")
+def get_subjective_questions(exam_id: int):
+    """获取考试中的所有主观题（问答题）"""
+    try:
+        with engine.connect() as conn:
+            exam = conn.execute(
+                text("SELECT exam_id FROM exams WHERE exam_id = :exam_id"),
+                {"exam_id": exam_id}
+            ).fetchone()
+            if not exam:
+                raise HTTPException(status_code=404, detail="考试不存在")
+
+            result = conn.execute(
+                text("""
+                    SELECT q.id, q.content, q.reference_answer, q.scoring_rules, q.score as max_score, eq.question_order
+                    FROM questions q
+                    INNER JOIN exam_questions eq ON q.id = eq.question_id
+                    WHERE eq.exam_id = :exam_id
+                      AND q.type NOT IN ('选择题', '填空题', '判断题', 'choice', 'fill_blank', 'true_false')
+                    ORDER BY eq.question_order
+                """),
+                {"exam_id": exam_id}
+            )
+            questions = []
+            for row in result.fetchall():
+                questions.append({
+                    "id": row.id,
+                    "question_order": row.question_order,
+                    "content": row.content,
+                    "reference_answer": row.reference_answer,
+                    "scoring_rules": row.scoring_rules,
+                    "max_score": float(row.max_score) if row.max_score is not None else 0
+                })
+            return {"code": 1, "msg": "获取成功", "data": questions}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取主观题失败 (exam_id={exam_id}): {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取主观题失败: {str(e)}")
+
+
+@router.get("/api/exams/{exam_id}/scores/{question_id}/students")
+def get_question_students(exam_id: int, question_id: int):
+    """获取某道主观题下所有学生的作答信息"""
+    try:
+        with engine.connect() as conn:
+            exam = conn.execute(
+                text("SELECT exam_id FROM exams WHERE exam_id = :exam_id"),
+                {"exam_id": exam_id}
+            ).fetchone()
+            if not exam:
+                raise HTTPException(status_code=404, detail="考试不存在")
+
+            # 题目信息
+            question = conn.execute(
+                text("""
+                    SELECT q.id, q.content, q.reference_answer, q.scoring_rules, q.score as max_score, eq.question_order
+                    FROM questions q
+                    INNER JOIN exam_questions eq ON q.id = eq.question_id
+                    WHERE eq.exam_id = :exam_id AND q.id = :question_id
+                """),
+                {"exam_id": exam_id, "question_id": question_id}
+            ).fetchone()
+            if not question:
+                raise HTTPException(status_code=404, detail="题目不存在")
+
+            # 所有学生
+            students_result = conn.execute(
+                text("""
+                    SELECT s.student_id, s.student_number, s.name, s.class, es.sort_order
+                    FROM students s
+                    INNER JOIN exam_students es ON s.student_id = es.student_id
+                    WHERE es.exam_id = :exam_id
+                    ORDER BY es.sort_order ASC, s.student_number ASC
+                """),
+                {"exam_id": exam_id}
+            )
+            students = [dict(row._mapping) for row in students_result.fetchall()]
+
+            # 得分信息
+            scores_result = conn.execute(
+                text("""
+                    SELECT student_id, score, student_answer, corrected_answer, recognition_correct, manual_reviewed
+                    FROM student_scores
+                    WHERE exam_id = :exam_id AND question_id = :question_id
+                """),
+                {"exam_id": exam_id, "question_id": question_id}
+            )
+            score_map = {}
+            for row in scores_result.fetchall():
+                score_map[row.student_id] = {
+                    "score": float(row.score) if row.score is not None else None,
+                    "student_answer": row.student_answer,
+                    "corrected_answer": row.corrected_answer,
+                    "recognition_correct": bool(row.recognition_correct) if row.recognition_correct is not None else True,
+                    "manual_reviewed": bool(row.manual_reviewed) if row.manual_reviewed is not None else False
+                }
+
+            result = []
+            for s in students:
+                sid = s["student_id"]
+                score_info = score_map.get(sid, {})
+                result.append({
+                    "student_id": sid,
+                    "student_number": s["student_number"],
+                    "name": s["name"],
+                    "class": s["class"],
+                    "score": score_info.get("score"),
+                    "student_answer": score_info.get("student_answer"),
+                    "corrected_answer": score_info.get("corrected_answer"),
+                    "recognition_correct": score_info.get("recognition_correct", True),
+                    "manual_reviewed": score_info.get("manual_reviewed", False)
+                })
+
+            return {
+                "code": 1,
+                "msg": "获取成功",
+                "data": {
+                    "question": {
+                        "id": question.id,
+                        "question_order": question.question_order,
+                        "content": question.content,
+                        "reference_answer": question.reference_answer,
+                        "scoring_rules": question.scoring_rules,
+                        "max_score": float(question.max_score) if question.max_score is not None else 0
+                    },
+                    "students": result
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"获取题目学生作答失败 (exam_id={exam_id}, question_id={question_id}): {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取学生作答失败: {str(e)}")
 
 
 @router.get("/api/exams/{exam_id}/export")

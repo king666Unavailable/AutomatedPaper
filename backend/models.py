@@ -16,6 +16,7 @@ class Exam(Base):
     total_score = Column(Integer)
     images_per_student = Column(Integer, default=2)
     answer_sheet_layout = Column(Text)
+    overall_analysis = Column(Text)
 
 class Student(Base):
     __tablename__ = 'students'
@@ -48,6 +49,7 @@ class Question(Base):
     scoring_rules = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    knowledge_point = Column(Text)
 
 class ExamQuestion(Base):
     __tablename__ = 'exam_questions'
@@ -97,4 +99,12 @@ class Score(Base):
     manual_reviewed = Column(Boolean, default=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+class ExamTypeAnalysis(Base):
+    __tablename__ = 'exam_type_analyses'
+    __table_args__ = {'extend_existing': True}
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    exam_id = Column(Integer, ForeignKey('exams.exam_id', ondelete='CASCADE'))
+    question_type = Column(String(50), nullable=False)
+    analysis = Column(Text)
 

@@ -119,6 +119,15 @@
             </div>
           </el-tab-pane>
 
+          <!-- 考试分析 -->
+          <el-tab-pane label="考试分析" name="analysis">
+            <div class="tab-content">
+              <ExamAnalysis
+                :exam-id="examId"
+              />
+            </div>
+          </el-tab-pane>
+
           <!-- 成绩管理 -->
           <el-tab-pane label="成绩管理" name="scores">
             <div class="tab-content">
@@ -169,6 +178,7 @@ import AnswerManager from './exam/AnswerManager.vue'
 import AIGradingConsole from './exam/AIGradingConsole.vue'
 import ScoreManager from './exam/ScoreManager.vue'
 import ManualGrading from './exam/ManualGrading.vue'
+import ExamAnalysis from './exam/ExamAnalysis.vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Upload, DocumentAdd, UploadFilled, Search, User, Refresh, Cpu, Delete, Rank } from '@element-plus/icons-vue'

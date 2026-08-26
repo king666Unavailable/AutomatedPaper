@@ -31,6 +31,7 @@ CREATE TABLE `exams` (
   `total_score` int DEFAULT NULL COMMENT '总分',
   `images_per_student` int NOT NULL DEFAULT '4' COMMENT '每个学生答题卡图片数量',
   `answer_sheet_layout` text COLLATE utf8mb4_unicode_ci COMMENT '答题卡布局JSON',
+  `overall_analysis` text COLLATE utf8mb4_unicode_ci COMMENT '试卷整体分析',
   PRIMARY KEY (`exam_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='考试信息表';
 
@@ -62,6 +63,7 @@ CREATE TABLE `questions` (
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   `parent_id` int DEFAULT NULL COMMENT '所属大题ID，指向本表的id',
+  `knowledge_point` text COLLATE utf8mb4_unicode_ci COMMENT '所属知识点',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='题目信息表';
 
@@ -197,3 +199,17 @@ CREATE TABLE `grading_jobs` (
   KEY `exam_id` (`exam_id`),
   CONSTRAINT `grading_jobs_ibfk_1` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`exam_id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI阅卷任务记录表';
+
+-- ============================================
+-- 12. 题型分析表
+-- ============================================
+CREATE TABLE `exam_type_analyses` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `exam_id` int NOT NULL,
+  `question_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '题型',
+  `analysis` text COLLATE utf8mb4_unicode_ci COMMENT '题型分析内容',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_exam_type` (`exam_id`,`question_type`),
+  KEY `exam_id` (`exam_id`),
+  CONSTRAINT `exam_type_analyses_ibfk_1` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`exam_id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='题型分析表';

@@ -11,7 +11,7 @@ from datetime import datetime
 import os
 import logging
 
-from backend.routers import auth, exams, students, questions, answers, grading, scores
+from backend.routers import auth, exams, students, questions, answers, grading, scores, analysis
 from backend.database import engine
 from sqlalchemy import text
 
@@ -44,6 +44,7 @@ app.include_router(questions.router, tags=["题目管理"])
 app.include_router(answers.router, tags=["答题卡管理"])
 app.include_router(grading.router, tags=["AI阅卷"])
 app.include_router(scores.router, tags=["成绩管理"])
+app.include_router(analysis.router, tags=["考试分析"])
 
 # ==================== 系统健康检查 ====================
 

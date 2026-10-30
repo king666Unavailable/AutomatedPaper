@@ -1,7 +1,7 @@
 # 试卷图片分析和AI阅卷实验平台 (Automated Paper Grading & Analysis Platform)
 
 ## 项目简介
-本项目是一个基于 **Vue.js** 和 **FastAPI** 的试卷图片分析与AI阅卷实验平台。它旨在为教育场景提供一个基础框架，涵盖了考试管理、学生信息管理、题目与参考答案管理等核心功能，并为 **AI阅卷**、**手写文字识别** 和 **智能评分** 等高级功能预留了接口和界面，供学习者在此基础上进行算法实现和二次开发。
+本项目是一个基于 **Vue 3**、**FastAPI** 和 **MySQL** 的试卷管理与 AI 阅卷平台，提供考试、学生、题目和答题卡管理，以及 AI 阅卷、主观题人工阅卷、成绩管理和考试分析功能。
 
 ## 系统架构
 项目采用前后端分离架构：
@@ -18,15 +18,17 @@ AutomatedPaper/
 │   ├── app_main.py         # 后端核心入口文件，集成所有路由
 │   ├── config.py           # 配置文件（从 .env 加载数据库和模型配置）
 │   ├── database.py         # 数据库连接初始化
+│   ├── schema.sql          # 数据库初始化脚本
 │   ├── requirements.txt    # Python依赖包列表
 │   └── routers/            # 路由模块 (按功能拆分)
 │       ├── auth.py         # 用户认证 (登录/注册)
 │       ├── exams.py        # 考试管理 (创建/更新/删除)
 │       ├── students.py     # 学生管理 & 考试学生关联
 │       ├── questions.py    # 题目管理 & 考试题目关联
-│       ├── answers.py      # [待实现] 答题卡图片管理
-│       ├── grading.py      # [待实现] AI阅卷核心逻辑
-│       └── scores.py       # [待实现] 成绩查询与管理
+│       ├── answers.py      # 答题卡图片管理
+│       ├── grading.py      # AI阅卷
+│       ├── scores.py       # 成绩与主观题人工阅卷
+│       └── analysis.py     # 考试分析
 ├── frontend/               # 前端代码目录
 │   ├── src/
 │   │   ├── views/          # 页面组件
@@ -35,11 +37,10 @@ AutomatedPaper/
 │   │   │   └── exam/                 # 考试功能子模块
 │   │   │       ├── StudentManager.vue    # 学生信息管理
 │   │   │       ├── QuestionManager.vue   # 题目与参考答案管理
-│   │   │       ├── AnswerManager.vue     # [待实现] 学生作答管理
-│   │   │       ├── AIGradingConsole.vue  # [待实现] AI阅卷控制台
-│   │   │       └── ScoreManager.vue      # [待实现] 成绩管理
+│   │   │       ├── AnswerManager.vue     # 学生作答管理
+│   │   │       ├── AIGradingConsole.vue  # AI阅卷与答题详情
+│   │   │       └── ScoreManager.vue      # 成绩管理、主观题阅卷和考试分析
 │   └── ...
-├── database_schema.sql     # 数据库初始化脚本
 └── README.md               # 项目说明文档
 ```
 
@@ -92,22 +93,21 @@ AutomatedPaper/
 
 | 表名 | 中文名 | 描述 | 关键字段 |
 | :--- | :--- | :--- | :--- |
-| **exams** | 考试表 | 存储考试的基本元数据 | `exam_id` (PK), `status` (状态), `images_per_student` (每生图片数), `answer_sheet_layout` (答题卡布局 JSON) |
+| **exams** | 考试表 | 存储考试的基本元数据和整体分析 | `exam_id` (PK), `status` (状态), `images_per_student` (每生图片数，默认 2), `answer_sheet_layout` (答题卡布局 JSON), `overall_analysis` |
 | **students** | 学生表 | 全局学生信息库，不依附于特定考试 | `student_id` (PK), `student_number` (Unique 学号), `class` (班级) |
 | **exam_students** | 考试-学生关联表 | **多对多关系表**。记录某次考试有哪些学生参加 | `exam_id` (FK), `student_id` (FK), `sort_order` (考场排序) |
-| **questions** | 题目表 | 题目库，存储题目内容、分值、标准答案和评分规则 | `id` (PK), `content`, `reference_answer`, `scoring_rules`, `score` |
+| **questions** | 题目表 | 题目库，存储题目内容、分值、标准答案、评分规则和知识点 | `id` (PK), `content`, `reference_answer`, `scoring_rules`, `score`, `knowledge_point` |
 | **exam_questions** | 考试-题目关联表 | **多对多关系表**。定义某次考试包含哪些题目及顺序 | `exam_id` (FK), `question_id` (FK), `question_order` (题号) |
 | **answer_sheets** | 答题卡图片表 | 存储学生上传的答题卡图片路径及预处理后的图片路径 | `id` (PK), `exam_id`, `student_id`, `filename`, `file_path`, `processed_file_path`, `page_order` |
-| **student_scores** | 学生成绩明细表 | 存储每名学生每道题的 AI 阅卷结果，**识别的学生答案也存放在这里** | `id` (PK), `exam_id`, `student_id`, `question_id`, `score`, `student_answer`, `recognition_correct` |
+| **student_scores** | 学生成绩明细表 | 存储每名学生每道题的得分、OCR 结果和人工复核信息 | `score`, `student_answer`, `recognition_correct`, `corrected_answer`, `manual_reviewed` |
 | **grading_jobs** | AI阅卷任务表 | 记录 AI 阅卷任务的进度和状态 | `id` (PK), `exam_id`, `status`, `total_students`, `processed_students` |
+| **exam_type_analyses** | 题型分析表 | 保存每场考试各题型的分析文本 | `exam_id`, `question_type`, `analysis` |
 | **users** | 用户表 | 教师/管理员登录认证 | `user_id` (PK), `username`, `password_hash`, `role` |
-| answer_images | 答题卡图片表（旧） | 旧表，当前代码未使用 | — |
-| scores | 成绩明细表（旧） | 旧表，当前代码未使用 | — |
 
 > **设计思路**: `students` 和 `questions` 表设计为**全局资源池**。
 > *   同一个学生可以参加多个 `exams` (通过 `exam_students` 关联)。
-> *   同一道题目可以被多场 `exams` 复用 (通过 `exam_questions` 关联)，方便组卷。
-> *   `student_scores.student_answer` 字段保存 AI/OCR 识别出的学生答案原文；`recognition_correct` 用于人工标注该识别结果是否正确。
+> *   同一道题目可以被多场 `exams` 复用（通过 `exam_questions` 关联），方便组卷。
+> *   `student_scores.student_answer` 保存 AI/OCR 识别的原始答案；`corrected_answer` 保存人工修正答案，不覆盖原始识别结果；`recognition_correct` 用于标注识别结果是否正确，`manual_reviewed` 记录主观题人工阅卷是否已查看。
 
 
 ## 技术栈
@@ -192,67 +192,13 @@ AutomatedPaper/
    ```
    访问控制台输出的本地地址（通常是 `http://localhost:5173`）即可使用系统。
 
-## 功能实现状态说明
+## 当前功能
 
-本项目分为 **"已实现功能"** 和 **"待实现接口"** 两部分，旨在引导学习者完成剩余的核心算法部分。
-
-### ✅ 已完全实现的功能
-以下模块已具备完整的前后端逻辑、数据库交互和界面操作：
-
-1. **考试管理**
-   - 考试的创建、列表展示、编辑和删除。
-   - 考试状态管理（创建中、进行中、已结束）。
-
-2. **学生信息管理 (StudentManager.vue)**
-   - **基础CRUD**：添加、修改、删除单个学生信息。
-   - **批量导入**：支持从 Excel (`.xlsx`, `.xls`) 或文本文件 (`.txt`, `.csv`) 批量导入学生名单。
-   - **关联管理**：将学生分配到特定考试，支持从题库中选择已有学生或导入新学生。
-   - **查重逻辑**：自动处理学号冲突和重复添加。
-
-3. **参考答案与题目信息管理 (QuestionManager.vue)**
-   - **题目编辑**：支持多种题型（选择、填空、主观题等）的增删改查。
-   - **文档导入**：支持解析 Word (`.docx`)、Excel 或 文本文件，自动提取题目内容、分值、参考答案和评分标准。
-   - **智能排序**：支持题目的拖拽排序或重新编号。
-
-
-
-
-## 二次开发指南 (Student Developer Guide)
-
-为了帮助同学们完成"作答管理"、"AI阅卷"和"成绩管理"的核心功能，以下列出了各模块的开发切入点：
-
-### 1. 任务一：学生作答管理 (图片上传与管理)
-**目标**：上传学生的答题卡扫描图片，并将其与特定学生和考试关联。
-*   **前端入口**：`frontend/src/views/exam/AnswerManager.vue`
-    *   需要实现文件上传组件，调用后端接口上传图片。
-    *   展示已上传的图片列表。
-*   **后端开发**：`backend/routers/answers.py`
-    *   `upload_exam_images`: 接收上传的文件，保存到 `backend/config.py` 中定义的 `UPLOAD_DIR`，并将路径记录到数据库。
-    *   `get_exam_images`: 返回该考试所有已上传的图片信息。
-    *   **进阶**：在上传后调用 OpenCV 进行简单的预处理（如去噪、二值化）。
-
-### 2. 任务二：AI 阅卷 (核心算法实现)
-**目标**：调用 OCR 和 LLM/NLP 工具分析图片，对比标准答案进行评分。
-*   **前端入口**：`frontend/src/views/exam/AIGradingConsole.vue`
-    *   点击“开始阅卷”按钮，触发后端长任务。
-    *   轮询后端接口获取阅卷进度和状态。
-*   **后端开发**：`backend/routers/grading.py`
-    *   `start_grading`: 核心逻辑入口。
-        1.  从数据库读取该考试的题目 (`questions` 表) 和学生作答图片。
-        2.  **OCR 识别**：调用 OCR SDK (如 PaddleOCR, Tesseract) 提取图片中的手写文字。
-        3.  **答案匹配**：将提取的文字与标准答案 (`reference_answer`) 进行比对。
-        4.  **智能赋分**：根据匹配度或调用大模型 (如 GPT/Gemini API) 依据 `scoring_rules` 进行打分。
-        5.  **结果保存**：将分数写入数据库 (需在数据库设计中添加 `scores` 或 `grading_results` 表)。
-    *   **辅助模块**：可能需要修改 `backend/routers/questions.py` 来获取题目详情作为对比基准。
-
-### 3. 任务三：成绩管理 (结果展示)
-**目标**：汇总并展示AI阅卷的结果，支持导出。
-*   **前端入口**：`frontend/src/views/exam/ScoreManager.vue`
-    *   调用接口获取成绩数据。
-    *   使用 Element Plus 表格展示每个学生的总分及各题得分。
-*   **后端开发**：`backend/routers/scores.py`
-    *   `get_exam_scores`: 聚合查询数据库，计算每个学生的总分、排名等统计信息并返回。
-    *   (可选) 实现导出 Excel 的接口。
+- 考试、学生和题目管理，支持学生及题目文件导入。
+- 答题卡图片上传、预处理、页面排序和学生匹配。
+- AI 阅卷、学生答案与识别结果复核、按学生重新阅卷。
+- 主观题人工阅卷、成绩查看与导出。
+- 考试分析：题目得分统计、知识点记录、题型分析和整卷分析。
 
 
 

@@ -29,8 +29,8 @@ CREATE TABLE `exams` (
   `status` enum('created','uploading','processing','completed','graded') COLLATE utf8mb4_unicode_ci DEFAULT 'created' COMMENT '考试状态',
   `total_questions` int DEFAULT NULL COMMENT '总题数',
   `total_score` int DEFAULT NULL COMMENT '总分',
-  `images_per_student` int NOT NULL DEFAULT '4' COMMENT '每个学生答题卡图片数量',
-  `answer_sheet_layout` text COLLATE utf8mb4_unicode_ci COMMENT '答题卡布局JSON',
+  `images_per_student` int NOT NULL DEFAULT '2' COMMENT '每个学生答题卡图片数量',
+  `answer_sheet_layout` json DEFAULT NULL COMMENT '答题卡布局JSON',
   `overall_analysis` text COLLATE utf8mb4_unicode_ci COMMENT '试卷整体分析',
   PRIMARY KEY (`exam_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='考试信息表';
@@ -109,10 +109,10 @@ CREATE TABLE `answer_sheets` (
   `exam_id` int NOT NULL,
   `student_id` int NOT NULL,
   `filename` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '原始文件名',
-  `file_path` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '图片存储路径',
+  `file_path` varchar(512) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '图片存储路径',
   `uploaded_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `page_order` int NOT NULL DEFAULT '0' COMMENT '图片顺序（从0开始）',
-  `processed_file_path` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '预处理后的图片路径',
+  `page_order` int NOT NULL DEFAULT '1' COMMENT '图片顺序（上传时由代码指定）',
+  `processed_file_path` varchar(512) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '预处理后的图片路径',
   PRIMARY KEY (`id`),
   KEY `student_id` (`student_id`),
   KEY `idx_exam_student_order` (`exam_id`,`student_id`,`page_order`),
@@ -121,25 +121,7 @@ CREATE TABLE `answer_sheets` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生答题图片表';
 
 -- ============================================
--- 8. 答题卡图片表（旧表/未使用）
--- 注意：代码中并未使用该表，建议删除。
--- ============================================
-CREATE TABLE `answer_images` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `exam_id` int NOT NULL,
-  `student_id` int NOT NULL,
-  `image_path` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT '图片存储路径',
-  `original_filename` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT '原始文件名',
-  `uploaded_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `exam_id` (`exam_id`),
-  KEY `student_id` (`student_id`),
-  CONSTRAINT `answer_images_ibfk_1` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`exam_id`) ON DELETE CASCADE,
-  CONSTRAINT `answer_images_ibfk_2` FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学生答题图片表（旧）';
-
--- ============================================
--- 9. 学生成绩明细表（当前实际使用）
+-- 8. 学生成绩明细表（当前实际使用）
 -- ============================================
 CREATE TABLE `student_scores` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -164,28 +146,7 @@ CREATE TABLE `student_scores` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================
--- 10. 成绩明细表（旧表/未使用）
--- 注意：代码中所有操作都走 student_scores，该表可删除。
--- ============================================
-CREATE TABLE `scores` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `exam_id` int NOT NULL,
-  `student_id` int NOT NULL,
-  `question_id` int NOT NULL,
-  `score` decimal(5,2) NOT NULL COMMENT '得分',
-  `feedback` text COLLATE utf8mb4_unicode_ci COMMENT '评语',
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `unique_scoring` (`exam_id`,`student_id`,`question_id`),
-  KEY `student_id` (`student_id`),
-  KEY `question_id` (`question_id`),
-  CONSTRAINT `scores_ibfk_1` FOREIGN KEY (`exam_id`) REFERENCES `exams` (`exam_id`) ON DELETE CASCADE,
-  CONSTRAINT `scores_ibfk_2` FOREIGN KEY (`student_id`) REFERENCES `students` (`student_id`) ON DELETE CASCADE,
-  CONSTRAINT `scores_ibfk_3` FOREIGN KEY (`question_id`) REFERENCES `questions` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='考试成绩明细表（旧）';
-
--- ============================================
--- 11. AI阅卷任务表
+-- 9. AI阅卷任务表
 -- ============================================
 CREATE TABLE `grading_jobs` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -201,7 +162,7 @@ CREATE TABLE `grading_jobs` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='AI阅卷任务记录表';
 
 -- ============================================
--- 12. 题型分析表
+-- 10. 题型分析表
 -- ============================================
 CREATE TABLE `exam_type_analyses` (
   `id` int NOT NULL AUTO_INCREMENT,
